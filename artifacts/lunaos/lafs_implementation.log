@@ -1,0 +1,122 @@
+LAFS implementation log
+Date: 2026-03-23
+Workspace: C:\Users\AI\lunaos
+
+Summary
+- Added LunaOS DATA space (ID 2) implementing the first lafs object store.
+- Added TEST space for create/write/read/list/persistence verification.
+- Extended SECURITY capability issuance for DATA read/mutate/list domains.
+- Extended BOOT to start SECURITY, DATA, and TEST in sequence.
+- Reworked image layout and manifest to embed BOOT, SECURITY, DATA, TEST, and lafs store metadata.
+
+Design
+- Storage model:
+  - lafs is a capability-gated object store, not a POSIX/FAT-like namespace.
+  - Objects live in a fixed-slot object library.
+  - Maximum objects: 128
+  - Slot size: 512 KiB per object
+  - Total object payload capacity: 64 MiB
+- Disk layout:
+  - Backing disk is the same raw QEMU boot disk.
+  - lafs starts at LBA 2048.
+  - Sector 2048: superblock
+  - Next 32 sectors: object record table (128 records x 128 bytes)
+  - Remaining sectors: object slot payloads
+- Metadata:
+  - object id: 128-bit Luna object id (`low`, `high`)
+  - object type
+  - flags
+  - encryption_flags placeholder
+  - created_at / modified_at
+  - content size
+  - slot index
+- IPC model:
+  - SECURITY gate remains at 0x31000
+  - DATA gate at 0x32000
+  - DATA payload buffer at 0x33000
+  - object id list buffer at 0x37000
+- Capability model:
+  - `LUNA_CAP_DATA_OBJECT_READ` -> read token
+  - `LUNA_CAP_DATA_OBJECT_MUTATE` -> create/write/delete token
+  - `LUNA_CAP_DATA_OBJECT_LIST` -> list token
+  - DATA validates CID values on every operation
+
+Implemented interfaces
+- `create_object(cap_token, metadata) -> object_id`
+- `write_object(cap_token, object_id, offset, data) -> status`
+- `read_object(cap_token, object_id, offset, size) -> data`
+- `delete_object(cap_token, object_id) -> status`
+- `list_objects(cap_token) -> [object_id]`
+
+Files added
+- data/Cargo.toml
+- data/data.ld
+- data/src/main.rs
+- test/test.ld
+- test/main.c
+
+Files updated
+- include/luna_proto.h
+- build/luna.ld
+- build/build.py
+- boot/main.c
+- boot/bootsector.asm
+- boot/boot.ld
+- security/src/main.rs
+- security/security.ld
+- test/test.ld
+
+Important implementation details
+- DATA space is Rust `#![no_std]` / `#![no_main]`.
+- DATA uses ATA PIO over ports 0x1F0-0x1F7 and 0x3F6 for persistence.
+- To avoid external runtime dependencies, DATA provides local `memcpy`/`memset`.
+- `.bss` had to be preserved in linked space images because DATA owns large static state (`SUPERBLOCK`, `OBJECTS`, sector buffer).
+- The raw disk image is pre-extended in `build/build.py` so lafs sectors are readable/writable from first boot.
+
+Capability and storage constants
+- DATA read CID:  low=0xDA7A0001 high=0xDADA1001
+- DATA mutate CID: low=0xDA7A0002 high=0xDADA1002
+- DATA list CID: low=0xDA7A0003 high=0xDADA1003
+- Store base LBA: 2048
+- Store sector count: 131105
+- Slot sectors: 1024
+- Object capacity: 128
+
+Boot / memory layout
+- BOOT: 0x10000
+- SECURITY: 0x11000
+- DATA: 0x12000
+- TEST: 0x18000
+- MANIFEST: 0x19000
+- BOOTVIEW: 0x30000
+- SECURITY gate: 0x31000
+- DATA gate: 0x32000
+- DATA buffer: 0x33000
+- LIST buffer: 0x37000
+
+Debugging notes
+- Initial large stage image exceeded the old simple load assumptions; compacted layout back under BIOS-friendly stage size.
+- One bootsector bug left DAP sector count at 0 and placed `STAGE_SECTORS` into `idt_ptr`; fixed.
+- One DATA-space layout bug let `.bss` overlap TEST/manifest; fixed by preserving `.bss` and moving TEST/MANIFEST higher.
+- One persistence bug came from the raw image not being pre-allocated to lafs storage range; fixed by padding the disk image at build time.
+
+Validation
+- First boot output:
+  [BOOT] dawn online
+  [SECURITY] ready
+  [BOOT] capability request ok
+  [BOOT] capability roster ok
+  [DATA] lafs online
+  [TEST] create ok
+  [TEST] readback ok
+- Second boot output:
+  [BOOT] dawn online
+  [SECURITY] ready
+  [BOOT] capability request ok
+  [BOOT] capability roster ok
+  [DATA] lafs online
+  [TEST] persistence ok
+
+Result
+- lafs initial version is implemented and persistent across QEMU reboot.
+- DATA space is now a core storage component with capability-checked object operations.

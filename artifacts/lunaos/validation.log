@@ -1,0 +1,33 @@
+LunaOS validation log
+Date: 2026-03-23
+Workspace: C:\Users\AI\lunaos
+
+1. Build pipeline
+- BOOT real-mode loader: boot/bootsector.asm
+- BOOT stage entry: boot/entry.asm
+- BOOT runtime: boot/main.c
+- SECURITY runtime: security/src/main.rs
+- Image builder: build/build.py
+
+2. QEMU installation
+- QEMU executable:
+  C:\Program Files\qemu\qemu-system-x86_64.exe
+
+3. Validation command
+- `qemu-system-x86_64 -drive file=build/lunaos.img,format=raw -serial stdio -display none -no-reboot -no-shutdown`
+
+4. Expected serial output
+- [BOOT] dawn online
+- [SECURITY] ready
+- [BOOT] capability request ok
+- [BOOT] capability roster ok
+
+5. Captured serial output
+- [BOOT] dawn online
+- [SECURITY] ready
+- [BOOT] capability request ok
+- [BOOT] capability roster ok
+
+6. Result
+- Validation status: SUCCESS
+- Output matches expected serial flow exactly.

@@ -1,0 +1,114 @@
+LunaOS Constellation Map
+
+[BOOT]
+boot_main = 0x00010020
+boot_stage_entry = 0x00010000
+boot_stage_entry.halt = 0x00010014
+msg_boot.4 = 0x00010490
+msg_request_fail.2 = 0x00010440
+msg_request_ok.3 = 0x00010470
+msg_roster_fail.0 = 0x00010400
+msg_roster_ok.1 = 0x00010420
+
+[SECURITY]
+_RNvCs5QKde7ScR4H_7___rustc17rust_begin_unwind = 0x00011000
+security_entry_boot = 0x00011010
+security_entry_gate = 0x00011140
+
+[DATA]
+_RNvCs5QKde7ScR4H_7___rustc17rust_begin_unwind = 0x00012000
+_ZN9luna_data15ata_read_sector17hf3c1afceccdfd298E = 0x00012010
+_ZN9luna_data16ata_write_sector17h3f44b7156818641fE = 0x000120D0
+data_entry_boot = 0x000121A0
+data_entry_gate = 0x00012720
+memcpy = 0x00012E30
+memset = 0x00012EC0
+
+[LIFECYCLE]
+_RNvCs5QKde7ScR4H_7___rustc17rust_begin_unwind = 0x00016000
+_ZN14luna_lifecycle10NEXT_EPOCH17hb31d840a469ccca2E.0 = 0x00017050
+_ZN14luna_lifecycle6upsert17h6e5aa6b7fb1399eaE = 0x00016010
+lifecycle_entry_boot = 0x00016460
+lifecycle_entry_gate = 0x00016640
+
+[SYSTEM]
+_RNvCs5QKde7ScR4H_7___rustc17rust_begin_unwind = 0x00018000
+_ZN11luna_system11NEXT_TICKET17hcfb35cba5bcd787cE.0 = 0x0001A870
+_ZN11luna_system18spawn_and_register17heeb6e51711612b16E = 0x00018010
+memset = 0x00018290
+system_entry_boot = 0x00018300
+system_entry_gate = 0x000196D0
+
+[PROGRAM]
+g_bootview = 0x0001C3D8
+g_loaded_app_base = 0x0001C3C8
+g_loaded_entry = 0x0001C3C0
+g_loaded_name = 0x0001C3B0
+g_loaded_ticket = 0x0001C3D0
+program_entry_boot = 0x0001C000
+program_entry_gate = 0x0001C050
+
+[TIME]
+g_boot_tsc = 0x0001E1E0
+time_entry_boot = 0x0001E000
+time_entry_gate = 0x0001E060
+
+[DEVICE]
+device_entry_boot = 0x00020000
+device_entry_gate = 0x00020040
+serial_lane.0 = 0x000201C0
+
+[OBSERVE]
+g_log_count = 0x000223C8
+g_log_dropped = 0x000223C0
+g_log_head = 0x000223C4
+g_logs = 0x000223E0
+g_stamp = 0x000223A0
+log_record = 0x00022000
+observe_entry_boot = 0x000220B0
+observe_entry_gate = 0x00022110
+
+[NETWORK]
+g_packet = 0x00025220
+g_packet_epoch = 0x00025200
+g_packet_size = 0x00025208
+network_entry_boot = 0x00025000
+network_entry_gate = 0x00025040
+
+[GRAPHICS]
+graphics_entry_boot = 0x00027000
+graphics_entry_gate = 0x00027050
+
+[PACKAGE]
+g_catalog = 0x00029220
+package_entry_boot = 0x00029000
+package_entry_gate = 0x00029070
+
+[UPDATE]
+g_flags = 0x0002B180
+update_entry_boot = 0x0002B000
+update_entry_gate = 0x0002B040
+
+[AI]
+ai_entry_boot = 0x0002D100
+ai_entry_gate = 0x0002D140
+request_capability.constprop.0 = 0x0002D000
+
+[USER]
+g_life_read_cid = 0x00031B70
+g_program_load_cid = 0x00031B60
+g_program_start_cid = 0x00031B50
+g_shell_cid = 0x00031B80
+request_capability = 0x00031000
+user_entry_boot = 0x00031100
+
+[TEST]
+net_payload.0 = 0x00036CEF
+payload.1 = 0x00036D00
+request_cap = 0x00035080
+serial_write = 0x00035000
+test_entry_boot = 0x00035180
+text_equal16 = 0x00035040
+
+[APP.HELLO]
+hello_app_entry = 0x00037000

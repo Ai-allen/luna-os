@@ -1,0 +1,8 @@
+set pagination off
+target remote :1234
+hb *0x7c1d
+c
+x/16hx 0x7ccc
+x/32xb 0x1000
+x/32xb 0x10000
+quit

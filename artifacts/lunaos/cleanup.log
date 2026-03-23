@@ -1,0 +1,93 @@
+LunaOS v2.0 cleanup log
+Date: 2026-03-23
+Workspace: C:\Users\AI\lunaos
+
+Goal
+- Converge the active system image and source tree to a BOOT + SECURITY only minimal prototype.
+- Preserve the existing directory structure, including data/ and test/, but remove them from the active build and boot flow.
+
+Modified files
+- include/luna_proto.h
+- boot/main.c
+- security/src/main.rs
+- build/luna.ld
+- build/build.py
+
+Cleanup steps
+1. Trimmed include/luna_proto.h to BOOT + SECURITY protocol definitions only.
+   - Removed DATA and TEST space IDs from the active protocol.
+   - Set SECURITY to space ID 3 to match the v2.0 space table.
+   - Removed lafs/data object structs, opcodes, and status codes from the active manifest/API.
+   - Reduced luna_manifest to BOOT -> SECURITY launch metadata plus gate/reserve fields.
+
+2. Trimmed boot/main.c to a BOOT -> SECURITY only startup path.
+   - Moved manifest address back to 0x18000 to match the reduced layout.
+   - Kept serial init and BOOT banner output.
+   - Kept a single capability request and capability roster IPC smoke test.
+   - Removed all runtime calls into DATA and TEST entrypoints.
+
+3. Simplified security/src/main.rs to minimal SECURITY behavior.
+   - Kept serial ready banner.
+   - Kept gate opcodes for request_capability and list_capabilities.
+   - Replaced DATA-specific multi-capability state with two hardcoded capabilities:
+     /data/object.write
+     /ai/infer
+   - list_capabilities now reports two capabilities.
+
+4. Reduced build/luna.ld to a two-space image layout.
+   - Removed SPACE DATA and SPACE TEST regions.
+   - Removed DATA_GATE, DATA_BUFFER, LIST_BUFFER, STACK DATA, and STACK TEST.
+   - Set MANIFEST to 0x18000.
+   - Active layout is now:
+     IMAGE_BASE 0x10000
+     SPACE BOOT 0x10000
+     SPACE SECURITY 0x11000
+     MANIFEST 0x18000
+     BOOTVIEW 0x30000
+     GATE 0x31000 size 0x1000
+     STACK BOOT 0x90000
+     STACK SECURITY 0x94000
+     RESERVE AI 0x40000000 size 0x20000000
+
+5. Simplified build/build.py so the active image only contains BOOT and SECURITY.
+   - Removed DATA/TEST layout parsing branches.
+   - Removed build_data() and build_test().
+   - Reduced manifest packing to BOOT + SECURITY fields only.
+   - Reduced constellation.map generation to BOOT and SECURITY symbols only.
+   - Removed raw-image padding that previously expanded the image for lafs storage sectors.
+
+Preserved but deactivated
+- data/ directory remains on disk and is not compiled into the active image.
+- test/ directory remains on disk and is not compiled into the active image.
+- No active boot path reaches DATA, TEST, or any additional space.
+
+Build execution
+- Command: python .\build\build.py
+- Result: success
+- Stage sectors: 65
+- BOOT payload size: 1072 bytes
+- SECURITY payload size: 432 bytes
+- Final image: build/lunaos.img
+- Final image size: 33792 bytes
+
+Generated layout / symbol map
+- build/constellation.map written successfully.
+- Relevant symbols:
+  boot_stage_entry = 0x00010000
+  boot_main = 0x00010020
+  security_entry_boot = 0x00011010
+  security_entry_gate = 0x00011140
+
+QEMU validation
+- Launch method: qemu-system-x86_64 -drive format=raw,file=build/lunaos.img -serial stdio -display none -no-reboot -no-shutdown
+- Captured serial output:
+  [BOOT] dawn online
+  [SECURITY] ready
+  [BOOT] capability request ok
+  [BOOT] capability roster ok
+
+Validation outcome
+- PASS: expected BOOT + SECURITY output present.
+- PASS: no DATA output present.
+- PASS: no TEST output present.
+- PASS: no other space output observed during validation window.

@@ -1,0 +1,97 @@
+LunaOS debug log
+Date: 2026-03-23
+Workspace: C:\Users\AI\lunaos
+
+Goal
+- Migrate the verified LunaOS prototype away from Python-emitted machine code and preserve the same boot/serial behavior under QEMU.
+
+Environment
+- QEMU executable: C:\Program Files\qemu\qemu-system-x86_64.exe
+- Windows compiler toolchain installed locally under `toolchains/winlibs`
+- Rust toolchain installed locally under `toolchains/rustup-home`
+- GDB availability: not installed in this environment (`gdb` not found)
+
+Migration result
+- Replaced direct Python machine-code emitters for BOOT/SECURITY payloads with:
+  - `boot/bootsector.asm`
+  - `boot/entry.asm`
+  - `boot/main.c`
+  - `security/src/main.rs`
+  - a rewritten compiler-driven `build/build.py`
+
+Step 1. First migrated build
+- BOOT compiled with local WinLibs `gcc/ld/nasm/objcopy`.
+- SECURITY compiled from Rust `no_std/no_main`.
+- The first migrated image built successfully but produced no serial output.
+
+Step 2. QEMU trace of migrated bootsector
+- Ran QEMU with:
+  `-d in_asm,int,guest_errors -D artifacts/lunaos/qemu_migrated_inasm.log`
+- The trace confirmed:
+  - BIOS loaded the MBR to 0x7C00.
+  - Disk load path via INT 13h extensions succeeded.
+  - The migrated bootsector reached the long-mode jump sequence.
+- Critical finding:
+  - NASM warned `word data exceeds bounds`.
+  - The emitted far jump decoded as `ljmpw $0x8:$0x0` instead of jumping to 0x10000.
+- Fix:
+  - Changed `jmp 0x08:0x10000` to `jmp dword 0x08:0x10000` in `boot/bootsector.asm`.
+
+Step 3. Intermediate migrated result
+- After fixing the far jump, QEMU serial output became:
+  [BOOT] dawn online
+  [SECURITY] ready
+- This confirmed that:
+  - BOOT C initialization was running
+  - SECURITY Rust `entry_boot` was reached and returned
+  - BOOT -> SECURITY manifest wiring was correct
+
+Step 4. Trace the migrated SECURITY gate crash
+- A second instruction trace after the far-jump fix showed:
+  - BOOT zeroed the gate slab and called `security_entry_gate`
+  - Rust code reached `security_entry_gate`
+  - execution faulted on an XMM/SSE instruction (`movsd`)
+- Root cause:
+  - The migrated bootsector only enabled `CR4.PAE`.
+  - Rust-generated x86_64 code used SSE/XMM instructions, but `CR4.OSFXSR` and `CR4.OSXMMEXCPT` were not enabled.
+- Fix:
+  - Updated `boot/bootsector.asm` to set `CR4 |= 0x620`, enabling PAE + OSFXSR + OSXMMEXCPT.
+
+Step 5. Final verification
+- Ran:
+  `qemu-system-x86_64 -drive file=build/lunaos.img,format=raw -serial stdio -display none -no-reboot -no-shutdown`
+- Captured serial output:
+  [BOOT] dawn online
+  [SECURITY] ready
+  [BOOT] capability request ok
+  [BOOT] capability roster ok
+- This matches README.md exactly.
+
+Checks against requested areas
+- QEMU detailed log: used successfully.
+- GDB single-step: skipped because `gdb` is not installed locally.
+- COM1 serial init:
+  - BOOT C configures 0x3F9, 0x3FB, 0x3F8, 0x3F9, 0x3FB, 0x3FA, 0x3FC.
+  - BOOT C and SECURITY Rust both poll line status port 0x3FD and write to 0x3F8.
+  - Verified working by observed serial output.
+- Image layout / MBR / 0x7C00:
+  - Confirmed by instruction trace from 0x7C00.
+- Long mode entry:
+  - Confirmed by execution of BOOT code at 0x10000 and SECURITY code at 0x14000.
+- Space gate / SECURITY load:
+  - Confirmed by successful call into SECURITY and successful gate request/list responses after the CR4 fix.
+
+Files changed
+- boot/bootsector.asm
+- boot/entry.asm
+- boot/main.c
+- boot/boot.ld
+- security/src/main.rs
+- security/security.ld
+- security/Cargo.toml
+- build/build.py
+- README.md
+
+Final status
+- Migration complete.
+- Rebuilt image now emits the full expected serial flow in QEMU.
