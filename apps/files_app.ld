@@ -1,0 +1,14 @@
+ENTRY(files_app_entry)
+SECTIONS
+{
+    . = 0;
+    .text : {
+        *(.text*)
+        *(.rdata*)
+    }
+    .data : {
+        *(.data*)
+        *(.bss*)
+        *(COMMON)
+    }
+}

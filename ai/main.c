@@ -4,33 +4,14 @@
 #include "../include/luna_proto.h"
 
 #define SYSV_ABI __attribute__((sysv_abi))
-#define LUNA_MANIFEST_ADDR 0x39000ull
 
 typedef void (SYSV_ABI *security_gate_fn_t)(struct luna_gate *gate);
 typedef void (SYSV_ABI *lifecycle_gate_fn_t)(struct luna_lifecycle_gate *gate);
 typedef void (SYSV_ABI *data_gate_fn_t)(struct luna_data_gate *gate);
+typedef void (SYSV_ABI *device_gate_fn_t)(struct luna_device_gate *gate);
 
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t value;
-    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-static void serial_putc(char value) {
-    while ((inb(0x3FD) & 0x20) == 0) {
-    }
-    outb(0x3F8, (uint8_t)value);
-}
-
-static void serial_write(const char *text) {
-    while (*text != '\0') {
-        serial_putc(*text++);
-    }
-}
+static struct luna_cid g_device_write_cid = {0, 0};
+static volatile struct luna_manifest *g_manifest = 0;
 
 static void zero_bytes(void *ptr, size_t len) {
     uint8_t *out = (uint8_t *)ptr;
@@ -51,17 +32,50 @@ static int text_equal(const char *lhs, const char *rhs) {
 }
 
 static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
-    volatile struct luna_manifest *manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
-    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)manifest->security_gate_base;
-    zero_bytes((void *)(uintptr_t)manifest->security_gate_base, sizeof(struct luna_gate));
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 90;
     gate->opcode = LUNA_GATE_REQUEST_CAP;
     gate->caller_space = LUNA_SPACE_AI;
     gate->domain_key = domain_key;
-    ((security_gate_fn_t)(uintptr_t)manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)manifest->security_gate_base);
+    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
     out->low = gate->cid_low;
     out->high = gate->cid_high;
     return gate->status;
+}
+
+static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 94;
+    gate->opcode = LUNA_GATE_VALIDATE_CAP;
+    gate->caller_space = 0;
+    gate->domain_key = domain_key;
+    gate->cid_low = cid_low;
+    gate->cid_high = cid_high;
+    gate->target_space = LUNA_SPACE_AI;
+    gate->target_gate = target_gate;
+    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    return gate->status;
+}
+
+static void device_write(const char *text) {
+    volatile struct luna_manifest *manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)manifest->device_gate_base;
+    uint64_t size = 0;
+    while (text[size] != '\0') {
+        size += 1u;
+    }
+    zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
+    gate->sequence = 93;
+    gate->opcode = LUNA_DEVICE_WRITE;
+    gate->cid_low = g_device_write_cid.low;
+    gate->cid_high = g_device_write_cid.high;
+    gate->device_id = 1u;
+    gate->buffer_addr = (uint64_t)(uintptr_t)text;
+    gate->buffer_size = size;
+    gate->size = size;
+    ((device_gate_fn_t)(uintptr_t)manifest->device_gate_entry)((struct luna_device_gate *)(uintptr_t)manifest->device_gate_base);
 }
 
 static void write_text(uint64_t buffer_addr, uint64_t buffer_size, const char *text) {
@@ -77,14 +91,6 @@ static void write_text(uint64_t buffer_addr, uint64_t buffer_size, const char *t
     out[i] = '\0';
 }
 
-static int allow_infer(uint64_t low, uint64_t high) {
-    return low == 0x6BA10001ull && high == 0x6B00D001ull;
-}
-
-static int allow_create(uint64_t low, uint64_t high) {
-    return low == 0x6BA10002ull && high == 0x6B00D002ull;
-}
-
 static uint32_t lookup_space_id(const char *name) {
     if (text_equal(name, "PROGRAM")) return LUNA_SPACE_PROGRAM;
     if (text_equal(name, "USER")) return LUNA_SPACE_USER;
@@ -96,16 +102,18 @@ static uint32_t lookup_space_id(const char *name) {
 
 void SYSV_ABI ai_entry_boot(const struct luna_bootview *bootview) {
     (void)bootview;
-    serial_write("[AI] yuesi stub ready\r\n");
+    g_manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    if (request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) == LUNA_GATE_OK) {
+        device_write("[AI] yuesi stub ready\r\n");
+    }
 }
 
 void SYSV_ABI ai_entry_gate(struct luna_ai_gate *gate) {
-    volatile struct luna_manifest *manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     gate->result_count = 0u;
     gate->status = LUNA_AI_ERR_INVALID_CAP;
     if (gate->opcode == LUNA_AI_INFER) {
         char *text = (char *)(uintptr_t)gate->buffer_addr;
-        if (!allow_infer(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_AI_INFER, gate->cid_low, gate->cid_high, LUNA_AI_INFER) != LUNA_GATE_OK) {
             return;
         }
         if (text_equal(text, "list spaces")) {
@@ -121,14 +129,14 @@ void SYSV_ABI ai_entry_gate(struct luna_ai_gate *gate) {
                 gate->status = LUNA_AI_ERR_NOT_UNDERSTOOD;
                 return;
             }
-            data_gate = (volatile struct luna_data_gate *)(uintptr_t)manifest->data_gate_base;
-            zero_bytes((void *)(uintptr_t)manifest->data_gate_base, sizeof(struct luna_data_gate));
+            data_gate = (volatile struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base;
+            zero_bytes((void *)(uintptr_t)g_manifest->data_gate_base, sizeof(struct luna_data_gate));
             data_gate->sequence = 91;
             data_gate->opcode = LUNA_DATA_SEED_OBJECT;
             data_gate->cid_low = seed.low;
             data_gate->cid_high = seed.high;
             data_gate->object_type = 0x54454D50u;
-            ((data_gate_fn_t)(uintptr_t)manifest->data_gate_entry)((struct luna_data_gate *)(uintptr_t)manifest->data_gate_base);
+            ((data_gate_fn_t)(uintptr_t)g_manifest->data_gate_entry)((struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base);
             if (data_gate->status != LUNA_DATA_OK) {
                 gate->status = LUNA_AI_ERR_NOT_UNDERSTOOD;
                 return;
@@ -147,7 +155,7 @@ void SYSV_ABI ai_entry_gate(struct luna_ai_gate *gate) {
         volatile struct luna_lifecycle_gate *life_gate;
         uint32_t space_id;
         char *name = (char *)(uintptr_t)gate->buffer_addr;
-        if (!allow_create(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_AI_CREATE, gate->cid_low, gate->cid_high, LUNA_AI_CREATE_SPACE) != LUNA_GATE_OK) {
             return;
         }
         space_id = lookup_space_id(name);
@@ -155,15 +163,15 @@ void SYSV_ABI ai_entry_gate(struct luna_ai_gate *gate) {
             gate->status = LUNA_AI_ERR_NOT_UNDERSTOOD;
             return;
         }
-        life_gate = (volatile struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base;
-        zero_bytes((void *)(uintptr_t)manifest->lifecycle_gate_base, sizeof(struct luna_lifecycle_gate));
+        life_gate = (volatile struct luna_lifecycle_gate *)(uintptr_t)g_manifest->lifecycle_gate_base;
+        zero_bytes((void *)(uintptr_t)g_manifest->lifecycle_gate_base, sizeof(struct luna_lifecycle_gate));
         life_gate->sequence = 92;
         life_gate->opcode = LUNA_LIFE_WAKE_UNIT;
         life_gate->space_id = space_id;
         life_gate->state = LUNA_UNIT_LIVE;
         life_gate->cid_low = wake.low;
         life_gate->cid_high = wake.high;
-        ((lifecycle_gate_fn_t)(uintptr_t)manifest->lifecycle_gate_entry)((struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base);
+        ((lifecycle_gate_fn_t)(uintptr_t)g_manifest->lifecycle_gate_entry)((struct luna_lifecycle_gate *)(uintptr_t)g_manifest->lifecycle_gate_base);
         gate->ticket = life_gate->epoch;
         gate->status = life_gate->status == LUNA_LIFE_OK ? LUNA_AI_OK : LUNA_AI_ERR_NOT_UNDERSTOOD;
     }

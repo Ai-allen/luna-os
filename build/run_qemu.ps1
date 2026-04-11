@@ -14,9 +14,16 @@ if (-not $qemu) {
 if (-not $qemu) {
   throw 'qemu-system-x86_64 not found. Install QEMU or add it to PATH.'
 }
-& $qemu.Source `
-  -drive "format=raw,file=$image" `
-  -serial stdio `
-  -display none `
-  -no-reboot `
-  -no-shutdown
+$serialMode = 'stdio'
+if ($env:LUNA_QEMU_SERIAL_LOG) {
+  $serialMode = "file:$($env:LUNA_QEMU_SERIAL_LOG)"
+}
+$args = @(
+  '-drive', "format=raw,file=$image",
+  '-serial', $serialMode,
+  '-display', 'gtk,show-cursor=on,grab-on-hover=on,zoom-to-fit=off',
+  '-no-reboot',
+  '-no-shutdown'
+)
+
+& $qemu.Source @args

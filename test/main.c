@@ -4,7 +4,6 @@
 #include "../include/luna_proto.h"
 
 #define SYSV_ABI __attribute__((sysv_abi))
-#define LUNA_MANIFEST_ADDR 0x39000ull
 
 typedef void (SYSV_ABI *security_gate_fn_t)(struct luna_gate *gate);
 typedef void (SYSV_ABI *data_gate_fn_t)(struct luna_data_gate *gate);
@@ -90,7 +89,7 @@ static uint32_t request_cap(uint64_t domain_key, struct luna_cid *out) {
     zero_bytes((void *)(uintptr_t)manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 10;
     gate->opcode = LUNA_GATE_REQUEST_CAP;
-    gate->caller_space = LUNA_SPACE_TEST;
+    gate->caller_space = LUNA_DIAG_TEST;
     gate->domain_key = domain_key;
     ((security_gate_fn_t)(uintptr_t)manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)manifest->security_gate_base);
     out->low = gate->cid_low;
@@ -358,7 +357,7 @@ void SYSV_ABI test_entry_boot(const struct luna_bootview *bootview) {
     device_gate->cid_high = cid_device_list.high;
     device_gate->buffer_addr = manifest->list_buffer_base;
     device_gate->buffer_size = manifest->list_buffer_size;
-    if (device_call(manifest) != LUNA_DEVICE_OK || device_gate->result_count != 1u || dev_info->device_id != 1u || !text_equal16(dev_info->name, "serial0")) {
+    if (device_call(manifest) != LUNA_DEVICE_OK || device_gate->result_count < 1u || dev_info->device_id != 1u || !text_equal16(dev_info->name, "serial0")) {
         serial_write("[TEST] device list fail\r\n");
         return;
     }
@@ -367,7 +366,7 @@ void SYSV_ABI test_entry_boot(const struct luna_bootview *bootview) {
     zero_bytes((void *)(uintptr_t)manifest->observe_gate_base, sizeof(struct luna_observe_gate));
     observe_gate->sequence = 50;
     observe_gate->opcode = LUNA_OBSERVE_LOG;
-    observe_gate->space_id = LUNA_SPACE_TEST;
+    observe_gate->space_id = LUNA_DIAG_TEST;
     observe_gate->level = 2u;
     observe_gate->cid_low = cid_observe_log.low;
     observe_gate->cid_high = cid_observe_log.high;
@@ -552,7 +551,7 @@ void SYSV_ABI test_entry_boot(const struct luna_bootview *bootview) {
         !contains_space(units, life_gate->result_count, LUNA_SPACE_PACKAGE) ||
         !contains_space(units, life_gate->result_count, LUNA_SPACE_UPDATE) ||
         !contains_space(units, life_gate->result_count, LUNA_SPACE_SYSTEM) ||
-        !contains_space(units, life_gate->result_count, LUNA_SPACE_TEST)) {
+        !contains_space(units, life_gate->result_count, LUNA_DIAG_TEST)) {
         serial_write("[TEST] lifecycle query fail\r\n");
         return;
     }

@@ -1,0 +1,84 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+LunaLoader UEFI Stage 1 handoff
+[BOOT] dawn online
+[BOOT] bootview enter
+[BOOT] bootview done
+[BOOT] fb done
+[BOOT] security enter
+[SECURITY] boot enter
+[SECURITY] seed cid
+[SECURITY] pour cid
+[SECURITY] draw cid
+[SECURITY] gather cid
+[SECURITY] ready
+[BOOT] security return
+[BOOT] request enter
+[BOOT] capability request ok
+[BOOT] roster enter
+[BOOT] capability roster ok
+[BOOT] lifecycle enter
+[LIFECYCLE] ledger online
+[BOOT] lifecycle return
+[BOOT] system enter
+[SYSTEM] atlas online
+[SYSTEM] Spawning DEVICE space...
+[LIFECYCLE] Spawning space  5
+[LIFECYCLE] device boot enter
+[DEVICE] clock ready
+[VIRTKBD] pci missing
+[DEVICE] input ready
+[DEVICE] lane ready
+[LIFECYCLE] device boot return
+[LIFECYCLE] device log enable
+[LIFECYCLE] device log ready
+[SYSTEM] Space 5 ready.
+[SYSTEM] Spawning DATA space...
+[LIFECYCLE] Spawning space  2
+[SYSTEM] Space 2 ready.
+[SYSTEM] Spawning GRAPHICS space...
+[LIFECYCLE] Spawning space  4
+[GRAPHICS] console ready
+[SYSTEM] Space 4 ready.
+[SYSTEM] Spawning NETWORK space...
+[LIFECYCLE] Spawning space  6
+[NETWORK] lunalink ready
+[SYSTEM] Space 6 ready.
+[SYSTEM] Spawning TIME space...
+[LIFECYCLE] Spawning space  8
+[TIME] pulse ready
+[SYSTEM] Space 8 ready.
+[SYSTEM] Spawning OBSERVE space...
+[LIFECYCLE] Spawning space 10
+[OBSERVE] ribbon ready
+[SYSTEM] Space 10 ready.
+[SYSTEM] Spawning PROGRAM space...
+[LIFECYCLE] Spawning space 12
+[SYSTEM] Space 12 ready.
+[SYSTEM] Spawning AI space...
+[LIFECYCLE] Spawning space 11
+[AI] yuesi stub ready
+[SYSTEM] Space 11 ready.
+[SYSTEM] Spawning PACKAGE space...
+[LIFECYCLE] Spawning space 13
+guard
+hello
+files
+notes
+console
+[SYSTEM] Space 13 ready.
+[SYSTEM] Spawning UPDATE space...
+[LIFECYCLE] Spawning space 14
+[UPDATE] wave ready
+[SYSTEM] Space 14 ready.
+[SYSTEM] Spawning USER space...
+[LIFECYCLE] Spawning space  7
+[USERDBG] enter
+[USERDBG] caps ok
+[USERDBG] drain ok
+[USER] shell ready
+[USER] input lane ready
+first-setup required: no hostname or user configured
+setup.init <hostname> <username> <password>
+[USERDBG] msg ok
+guest@luna:~$ 

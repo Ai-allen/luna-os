@@ -1,0 +1,146 @@
+[BOOT] dawn online
+[SECURITY] ready
+[BOOT] capability request ok
+[BOOT] capability roster ok
+[LIFECYCLE] ledger online
+[SYSTEM] atlas online
+[SYSTEM] Spawning DEVICE space...
+[LIFECYCLE] Spawning space  5
+[VIRTKBD] pci missing
+[DEVICE] lane ready
+[SYSTEM] Space 5 ready.
+[SYSTEM] Spawning DATA space...
+[LIFECYCLE] Spawning space  2
+[DATA] format store
+[DATA] lafs disk online
+[SYSTEM] Space 2 ready.
+[SYSTEM] Spawning GRAPHICS space...
+[LIFECYCLE] Spawning space  4
+[SYSTEM] Space 4 ready.
+[SYSTEM] Spawning NETWORK space...
+[LIFECYCLE] Spawning space  6
+[NETWORK] loop ready
+[SYSTEM] Space 6 ready.
+[SYSTEM] Spawning TIME space...
+[LIFECYCLE] Spawning space  8
+[TIME] pulse ready
+[SYSTEM] Space 8 ready.
+[SYSTEM] Spawning OBSERVE space...
+[LIFECYCLE] Spawning space 10
+[OBSERVE] ribbon ready
+[SYSTEM] Space 10 ready.
+[SYSTEM] Spawning PROGRAM space...
+[LIFECYCLE] Spawning space 12
+[PROGRAM] runtime ready
+[SYSTEM] Space 12 ready.
+[SYSTEM] Spawning AI space...
+[LIFECYCLE] Spawning space 11
+[AI] yuesi stub ready
+[SYSTEM] Space 11 ready.
+[SYSTEM] Spawning PACKAGE space...
+[LIFECYCLE] Spawning space 13
+[PACKAGE] catalog ready
+[SYSTEM] Space 13 ready.
+[SYSTEM] Spawning UPDATE space...
+[LIFECYCLE] Spawning space 14
+[UPDATE] wave ready
+[SYSTEM] Space 14 ready.
+[SYSTEM] Spawning USER space...
+[LIFECYCLE] Spawning space  7
+[USERDBG] enter
+[USERDBG] caps ok
+[USERDBG] drain ok
+[USER] shell ready
+[USER] input lane ready
+[USER] desktop session online
+[USERDBG] msg ok
+run Notes
+launch request: Notes
+[NOTES] Luna Notes live
+opened note library
+readback ok
+preview: LUNA-NOTE
+title: workspace
+body: Luna note seed
+type to edit
+luna@operator:~$ 
+=== scrub reboot ===
+[BOOT] dawn online
+[SECURITY] ready
+[BOOT] capability request ok
+[BOOT] capability roster ok
+[LIFECYCLE] ledger online
+[SYSTEM] atlas online
+[SYSTEM] Spawning DEVICE space...
+[LIFECYCLE] Spawning space  5
+[VIRTKBD] pci missing
+[DEVICE] lane ready
+[SYSTEM] Space 5 ready.
+[SYSTEM] Spawning DATA space...
+[LIFECYCLE] Spawning space  2
+[DATA] recovery replay
+[DATA] scrub objects
+[DATA] lafs disk online
+[SYSTEM] Space 2 ready.
+[SYSTEM] Spawning GRAPHICS space...
+[LIFECYCLE] Spawning space  4
+[SYSTEM] Space 4 ready.
+[SYSTEM] Spawning NETWORK space...
+[LIFECYCLE] Spawning space  6
+[NETWORK] loop ready
+[SYSTEM] Space 6 ready.
+[SYSTEM] Spawning TIME space...
+[LIFECYCLE] Spawning space  8
+[TIME] pulse ready
+[SYSTEM] Space 8 ready.
+[SYSTEM] Spawning OBSERVE space...
+[LIFECYCLE] Spawning space 10
+[OBSERVE] ribbon ready
+[SYSTEM] Space 10 ready.
+[SYSTEM] Spawning PROGRAM space...
+[LIFECYCLE] Spawning space 12
+[PROGRAM] runtime ready
+[SYSTEM] Space 12 ready.
+[SYSTEM] Spawning AI space...
+[LIFECYCLE] Spawning space 11
+[AI] yuesi stub ready
+[SYSTEM] Space 11 ready.
+[SYSTEM] Spawning PACKAGE space...
+[LIFECYCLE] Spawning space 13
+[PACKAGE] catalog ready
+[SYSTEM] Space 13 ready.
+[SYSTEM] Spawning UPDATE space...
+[LIFECYCLE] Spawning space 14
+[UPDATE] wave ready
+[SYSTEM] Space 14 ready.
+[SYSTEM] Spawning USER space...
+[LIFECYCLE] Spawning space  7
+[USERDBG] enter
+[USERDBG] caps ok
+[USERDBG] drain ok
+[USER] shell ready
+[USER] input lane ready
+[USER] desktop session online
+[USERDBG] msg ok
+store-info
+lafs.version: 2
+lafs.objects: 3
+lafs.state: clean
+lafs.mounts: 2
+lafs.formats: 1
+lafs.nonce: 11
+lafs.last-repair: scrub
+lafs.last-scrubbed: 1
+store-check
+lafs.health: ok
+lafs.invalid: 0
+lafs.objects: 3
+run Files
+launch request: Files
+[FILES] Luna Files preview
+visible objects: 2
+> item [note] workspace | Luna note seed
+  item LUNA-THEME  variant: 0  
+arrows browse  enter open
+browser surface online
+luna@operator:~$ 

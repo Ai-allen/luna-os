@@ -1,53 +1,101 @@
-#include <stdint.h>
+#include "graphics_internal.h"
 
-#include "../include/luna_proto.h"
+struct luna_cid g_device_write_cid = {0, 0};
+struct luna_cid g_device_read_cid = {0, 0};
+volatile struct luna_manifest *g_manifest = 0;
+uint16_t g_text_cells[80u * 25u];
+uint32_t g_active_window = 0;
+uint32_t *g_framebuffer = 0;
+uint32_t g_fb_width = 0;
+uint32_t g_fb_height = 0;
+uint32_t g_fb_stride = 0;
+uint32_t g_fb_format = 0;
+uint64_t g_fb_buffer_bytes = 0u;
+uint32_t g_cell_width = 8;
+uint32_t g_cell_height = 16;
+uint32_t g_launcher_open = 0;
+uint32_t g_launcher_index = 0;
+uint32_t g_cursor_x = 40u;
+uint32_t g_cursor_y = 12u;
+uint32_t g_control_open = 0u;
+uint32_t g_render_hover_kind = 0u;
+uint32_t g_render_hover_window = 0u;
+struct luna_desktop_shell_state g_shell_state = {
+    .version = 1u,
+    .entry_count = 5u,
+    .entries = {
+        { "files.la", "Files", 3u, 4u, 0u },
+        { "notes.la", "Notes", 3u, 8u, 0u },
+        { "guard.la", "Guard", 3u, 12u, 0u },
+        { "console.la", "Console", 3u, 16u, 0u },
+        { "hello.la", "Hello", 3u, 20u, 0u },
+    },
+};
+struct luna_window_record g_windows[8];
 
-#define SYSV_ABI __attribute__((sysv_abi))
-
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 41;
+    gate->opcode = LUNA_GATE_REQUEST_CAP;
+    gate->caller_space = LUNA_SPACE_GRAPHICS;
+    gate->domain_key = domain_key;
+    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    out->low = gate->cid_low;
+    out->high = gate->cid_high;
+    return gate->status;
 }
 
-static inline uint8_t inb(uint16_t port) {
-    uint8_t value;
-    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
+uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 43;
+    gate->opcode = LUNA_GATE_VALIDATE_CAP;
+    gate->caller_space = 0;
+    gate->domain_key = domain_key;
+    gate->cid_low = cid_low;
+    gate->cid_high = cid_high;
+    gate->target_space = LUNA_SPACE_GRAPHICS;
+    gate->target_gate = target_gate;
+    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    return gate->status;
 }
 
-static void serial_putc(char value) {
-    while ((inb(0x3FD) & 0x20) == 0) {
+void device_write(const char *text) {
+    volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base;
+    uint64_t size = 0;
+    while (text[size] != '\0') {
+        size += 1u;
     }
-    outb(0x3F8, (uint8_t)value);
-}
-
-static void serial_write(const char *text) {
-    while (*text != '\0') {
-        serial_putc(*text++);
-    }
-}
-
-static int allow_draw(uint64_t low, uint64_t high) {
-    return low == 0x64A10001ull && high == 0x6400A001ull;
+    zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
+    gate->sequence = 42;
+    gate->opcode = LUNA_DEVICE_WRITE;
+    gate->cid_low = g_device_write_cid.low;
+    gate->cid_high = g_device_write_cid.high;
+    gate->device_id = LUNA_DEVICE_ID_SERIAL0;
+    gate->buffer_addr = (uint64_t)(uintptr_t)text;
+    gate->buffer_size = size;
+    gate->size = size;
+    ((device_gate_fn_t)(uintptr_t)g_manifest->device_gate_entry)((struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base);
 }
 
 void SYSV_ABI graphics_entry_boot(const struct luna_bootview *bootview) {
-    volatile uint16_t *vga = (volatile uint16_t *)(uintptr_t)0xB8000u;
-    (void)bootview;
-    vga[0] = (uint16_t)0x1F00u | (uint16_t)'L';
-    serial_write("[GRAPHICS] console ready\r\n");
-}
-
-void SYSV_ABI graphics_entry_gate(struct luna_graphics_gate *gate) {
-    volatile uint16_t *vga = (volatile uint16_t *)(uintptr_t)0xB8000u;
-    gate->result_count = 0u;
-    gate->status = LUNA_GRAPHICS_ERR_INVALID_CAP;
-    if (gate->opcode != LUNA_GRAPHICS_DRAW_CHAR || !allow_draw(gate->cid_low, gate->cid_high)) {
-        return;
+    g_manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    if (request_capability(LUNA_CAP_DEVICE_READ, &g_device_read_cid) != LUNA_GATE_OK) {
+        g_device_read_cid.low = 0u;
+        g_device_read_cid.high = 0u;
     }
-    if (gate->x >= 80u || gate->y >= 25u) {
-        gate->status = LUNA_GRAPHICS_ERR_RANGE;
-        return;
+    init_framebuffer(bootview);
+    if (request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) == LUNA_GATE_OK) {
+        zero_bytes(g_text_cells, sizeof(g_text_cells));
+        render_scene();
+        if (g_framebuffer != 0) {
+            device_write("[GRAPHICS] framebuffer ready\r\n");
+        } else {
+            device_write("[GRAPHICS] console ready\r\n");
+        }
+    } else {
+        zero_bytes(g_text_cells, sizeof(g_text_cells));
+        render_scene();
     }
-    vga[gate->y * 80u + gate->x] = (uint16_t)((gate->attr & 0xFFu) << 8) | (uint16_t)(gate->glyph & 0xFFu);
-    gate->status = LUNA_GRAPHICS_OK;
 }

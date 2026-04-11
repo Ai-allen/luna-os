@@ -1,0 +1,2 @@
+pub const LUNA_MANIFEST_ADDR: u64 = 0x3B0000;
+pub const LUNA_BOOTVIEW_ADDR: u64 = 0x3B2000;

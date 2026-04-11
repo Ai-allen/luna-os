@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuite name="lunaos-fullregression" tests="7" failures="0" errors="0" skipped="0" time="62.572" timestamp="2026-04-10T02:43:54.572984+00:00">
+  <testcase name="build" classname="lunaos.vm" time="26.320">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\build.log</system-out>
+  </testcase>
+  <testcase name="bootcheck" classname="lunaos.vm" time="5.246">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\bootcheck.log</system-out>
+  </testcase>
+  <testcase name="shellcheck" classname="lunaos.vm" time="3.752">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\shellcheck.log</system-out>
+  </testcase>
+  <testcase name="desktopcheck" classname="lunaos.vm" time="3.390">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\desktopcheck.log</system-out>
+  </testcase>
+  <testcase name="uefi-bootcheck" classname="lunaos.vm" time="7.625">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\uefi-bootcheck.log</system-out>
+  </testcase>
+  <testcase name="uefi-shellcheck" classname="lunaos.vm" time="5.022">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\uefi-shellcheck.log</system-out>
+  </testcase>
+  <testcase name="uefi-stabilitycheck" classname="lunaos.vm" time="11.209">
+    <properties />
+    <system-out>log: C:\Users\AI\lunaos\artifacts\lunaos\fullregression_steps\uefi-stabilitycheck.log</system-out>
+  </testcase>
+</testsuite>

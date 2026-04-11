@@ -1,0 +1,2 @@
+list-apps
+run guard.la

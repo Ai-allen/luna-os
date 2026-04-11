@@ -1,0 +1,141 @@
+{
+  "generated_at": "2026-04-10T02:43:54.572984+00:00",
+  "repo_root": "C:\\Users\\AI\\lunaos",
+  "status": "passed",
+  "steps": [
+    {
+      "name": "build",
+      "command": [
+        "D:\\Software library\\Python\\python.exe",
+        "C:\\Users\\AI\\lunaos\\build\\build.py"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:43:54.573011+00:00",
+      "finished_at": "2026-04-10T02:44:20.892794+00:00",
+      "duration_seconds": 26.32,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\build.log"
+    },
+    {
+      "name": "bootcheck",
+      "command": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "-NoProfile",
+        "-File",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_bootcheck.ps1"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:20.893892+00:00",
+      "finished_at": "2026-04-10T02:44:26.140074+00:00",
+      "duration_seconds": 5.246,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\bootcheck.log"
+    },
+    {
+      "name": "shellcheck",
+      "command": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "-NoProfile",
+        "-File",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_shellcheck.ps1"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:26.141209+00:00",
+      "finished_at": "2026-04-10T02:44:29.893486+00:00",
+      "duration_seconds": 3.752,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\shellcheck.log"
+    },
+    {
+      "name": "desktopcheck",
+      "command": [
+        "D:\\Software library\\Python\\python.exe",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_desktopcheck.py"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:29.894754+00:00",
+      "finished_at": "2026-04-10T02:44:33.284887+00:00",
+      "duration_seconds": 3.39,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\desktopcheck.log"
+    },
+    {
+      "name": "uefi-bootcheck",
+      "command": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "-NoProfile",
+        "-File",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_uefi_bootcheck.ps1"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:33.285758+00:00",
+      "finished_at": "2026-04-10T02:44:40.910794+00:00",
+      "duration_seconds": 7.625,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\uefi-bootcheck.log"
+    },
+    {
+      "name": "uefi-shellcheck",
+      "command": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "-NoProfile",
+        "-File",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_uefi_shellcheck.ps1"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:40.911763+00:00",
+      "finished_at": "2026-04-10T02:44:45.933625+00:00",
+      "duration_seconds": 5.022,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\uefi-shellcheck.log"
+    },
+    {
+      "name": "uefi-stabilitycheck",
+      "command": [
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "-NoProfile",
+        "-File",
+        "C:\\Users\\AI\\lunaos\\build\\run_qemu_uefi_stabilitycheck.ps1"
+      ],
+      "workdir": "C:\\Users\\AI\\lunaos\\build",
+      "started_at": "2026-04-10T02:44:45.934995+00:00",
+      "finished_at": "2026-04-10T02:44:57.143547+00:00",
+      "duration_seconds": 11.209,
+      "exit_code": 0,
+      "status": "passed",
+      "output_path": "C:\\Users\\AI\\lunaos\\artifacts\\lunaos\\fullregression_steps\\uefi-stabilitycheck.log"
+    }
+  ],
+  "duration_seconds": 62.572,
+  "passed_steps": 7,
+  "failed_steps": 0,
+  "total_steps": 7,
+  "artifacts": [
+    {
+      "path": "C:\\Users\\AI\\lunaos\\build\\lunaos.img",
+      "size_bytes": 9515520,
+      "sha256": "9fdd18630b05b37a86e7151b898ba76f36b963809d30cd45109b7c79361c9a70"
+    },
+    {
+      "path": "C:\\Users\\AI\\lunaos\\build\\lunaos_disk.img",
+      "size_bytes": 67108864,
+      "sha256": "ad7cc2f7bde1a2d248a59bfd1d55a190dedc647c9661124aaa4af45862eac71a"
+    },
+    {
+      "path": "C:\\Users\\AI\\lunaos\\build\\lunaos_esp.img",
+      "size_bytes": 8388608,
+      "sha256": "0c0500838fbf7911024f2ae7811b9fa021cc7e85d6be6e5de23eb1c4d7fe05e6"
+    },
+    {
+      "path": "C:\\Users\\AI\\lunaos\\build\\EFI\\BOOT\\BOOTX64.EFI",
+      "size_bytes": 8171,
+      "sha256": "20176cc72636e288640f43fe209f79e6d6ebceaad3afae0df00ef810c83a899e"
+    }
+  ]
+}

@@ -1,0 +1,336 @@
+[LunaLoader] Stage 1 online
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 2 loaded
+[BOOT] dawn online
+[BOOT] bootview enter
+[BOOT] bootview done
+[BOOT] fb done
+[BOOT] security enter
+[SECURITY] boot enter
+[SECURITY] seed cid
+[SECURITY] pour cid
+[SECURITY] draw cid
+[SECURITY] gather cid
+[SECURITY] ready
+[BOOT] security return
+[BOOT] request enter
+[BOOT] capability request ok
+[BOOT] roster enter
+[BOOT] capability roster ok
+[BOOT] lifecycle enter
+[LIFECYCLE] ledger online
+[BOOT] lifecycle return
+[BOOT] system enter
+[SYSTEM] atlas online
+[SYSTEM] Spawning DEVICE space...
+[LIFECYCLE] Spawning space  5
+[LIFECYCLE] device boot enter
+[DEVICE] clock ready
+[VIRTKBD] pci missing
+[DEVICE] input ready
+[DEVICE] lane ready
+[LIFECYCLE] device boot return
+[LIFECYCLE] device log enable
+[LIFECYCLE] device log ready
+[SYSTEM] Space 5 ready.
+[SYSTEM] Spawning DATA space...
+[LIFECYCLE] Spawning space  2
+[SYSTEM] Space 2 ready.
+[SYSTEM] Spawning GRAPHICS space...
+[LIFECYCLE] Spawning space  4
+[GRAPHICS] console ready
+[SYSTEM] Space 4 ready.
+[SYSTEM] Spawning NETWORK space...
+[LIFECYCLE] Spawning space  6
+[NETWORK] lunalink ready
+[SYSTEM] Space 6 ready.
+[SYSTEM] Spawning TIME space...
+[LIFECYCLE] Spawning space  8
+[TIME] pulse ready
+[SYSTEM] Space 8 ready.
+[SYSTEM] Spawning OBSERVE space...
+[LIFECYCLE] Spawning space 10
+[OBSERVE] ribbon ready
+[SYSTEM] Space 10 ready.
+[SYSTEM] Spawning PROGRAM space...
+[LIFECYCLE] Spawning space 12
+[SYSTEM] Space 12 ready.
+[SYSTEM] Spawning AI space...
+[LIFECYCLE] Spawning space 11
+[AI] yuesi stub ready
+[SYSTEM] Space 11 ready.
+[SYSTEM] Spawning PACKAGE space...
+[LIFECYCLE] Spawning space 13
+guard
+hello
+files
+notes
+console
+[SYSTEM] Space 13 ready.
+[SYSTEM] Spawning UPDATE space...
+[LIFECYCLE] Spawning space 14
+[UPDATE] wave ready
+[SYSTEM] Space 14 ready.
+[SYSTEM] Spawning USER space...
+[LIFECYCLE] Spawning space  7
+[USERDBG] enter
+[USERDBG] caps ok
+[USERDBG] drain ok
+[USER] shell ready
+[USER] input lane ready
+first-setup required: no hostname or user configured
+setup.init <hostname> <username> <password>
+[USERDBG] msg ok
+setup.init luna dev secret
+setup.init ok: host and first user created
+login ok: session active
+desktop.boot
+files surface ready
+files.user dev@luna
+files.documents=0x4C4146530000001C
+files.visible=2 selected=0
+files.current=unavailable
+files.next=run Notes or desktop.files.open
+apps 1-5 or F/N/G/C/H
+menu Esc   focus Tab
+move or browse with arrows
+open with Enter
+type in Notes when the note is focused
+next open Settings, Files, or Notes
+window keys F6 close  F7 hide  F8 zoom
+[DESKTOP] boot ok
+desktop.window
+[DESKTOP] window id=2086405832 title=Console x=2 y=12 w=37 h=11 min=0 max=0
+desktop.focus
+[DESKTOP] focus ok
+desktop.window
+[DESKTOP] window id=2086405832 title=Console x=2 y=12 w=37 h=11 min=0 max=0
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Console update=idle pair=unavailable policy=deny
+desktop.pointer 8 17
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=1 window=2086405832 glyph=4
+desktop.click
+[DESKTOP] click ok
+desktop.window
+[DESKTOP] window id=2086405832 title=Console x=2 y=12 w=37 h=11 min=0 max=0
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Console update=idle pair=unavailable policy=deny
+desktop.pointer 4 24
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=0 window=0 glyph=4
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Console update=idle pair=unavailable policy=deny
+desktop.launch Guard
+security center
+active cids: 4
+live seals: 0
+live spaces: 15
+device lanes: 7
+observe entries: 1
+observe level: info
+OBSERVABILITY [info]: observe online
+action: revoke-cap
+[DESKTOP] launch Guard ok
+desktop.window
+[DESKTOP] window id=2086405833 title=Guard x=57 y=2 w=21 h=11 min=0 max=0
+desktop.pointer 61 7
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=1 window=2086405833 glyph=3
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Guard update=idle pair=unavailable policy=deny
+desktop.pointer 69 7
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=1 window=2086405833 glyph=3
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Guard update=idle pair=unavailable policy=deny
+desktop.launch Settings
+settings surface ready
+[DESKTOP] launch Settings ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Settings update=idle pair=unavailable policy=deny
+desktop.settings
+[DESKTOP] settings ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Settings update=idle pair=unavailable policy=deny
+desktop.window
+[DESKTOP] window id=2086405833 title=Guard x=57 y=2 w=21 h=11 min=0 max=0
+desktop.minimize
+[DESKTOP] minimize ok
+desktop.window
+[DESKTOP] window id=2086405831 title= x=0 y=3028046014 w=1913900354 h=1612089865 min=24926214 max=1711276032
+desktop.maximize
+[DESKTOP] maximize ok
+desktop.window
+[DESKTOP] window id=2086405831 title= x=2147543676 y=3958636544 w=253 h=0 min=24926214 max=0
+desktop.pointer 4 10
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=0 window=0 glyph=0
+desktop.click
+[DESKTOP] click ok
+desktop.window
+[DESKTOP] window id=2086405831 title= x=2147543676 y=3958636544 w=253 h=0 min=24926214 max=0
+desktop.control
+[DESKTOP] control ok
+desktop.theme
+[DESKTOP] theme ok
+desktop.launch Notes
+workspace created
+title firstlight
+text Luna note seed
+status ready for editing
+next type in Notes or use desktop.note <text>
+[DESKTOP] launch Notes ok
+desktop.note workspace draft
+workspace created
+title firstlight
+text Luna note seed
+status ready for editing
+next type in Notes or use desktop.note <text>
+[DESKTOP] note ok
+desktop.window
+[DESKTOP] window id=2086405834 title=Notes x=29 y=2 w=27 h=9 min=0 max=0
+desktop.pointer 46 7
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=1 window=2086405834 glyph=2
+desktop.click
+[DESKTOP] click ok
+desktop.window
+[DESKTOP] window id=2086405834 title=Notes x=29 y=2 w=27 h=9 min=0 max=0
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=1 selected=Notes update=idle pair=unavailable policy=deny
+desktop.launch Files
+files surface ready
+[DESKTOP] launch Files ok
+desktop.window
+[DESKTOP] window id=2086405834 title=Notes x=29 y=2 w=27 h=9 min=0 max=0
+desktop.launch Console
+apps 1-5 or F/N/G/C/H
+menu Esc   focus Tab
+move or browse with arrows
+open with Enter
+type in Notes when the note is focused
+next open Settings, Files, or Notes
+window keys F6 close  F7 hide  F8 zoom
+[DESKTOP] launch Console ok
+desktop.window
+[DESKTOP] window id=2086405832 title=Console x=2 y=12 w=37 h=11 min=0 max=0
+desktop.launch Files
+files surface ready
+[DESKTOP] launch Files ok
+desktop.window
+[DESKTOP] window id=2086405832 title=Console x=2 y=12 w=37 h=11 min=0 max=0
+desktop.files.next
+files surface ready
+[DESKTOP] files.next ok
+desktop.files.open
+files surface ready
+[DESKTOP] files.open ok
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Files update=idle pair=unavailable policy=deny
+desktop.control
+[DESKTOP] control ok
+desktop.pointer 78 24
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=0 window=0 glyph=1
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Files update=idle pair=unavailable policy=deny
+desktop.pointer 60 16
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=0 window=0 glyph=1
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Files update=idle pair=unavailable policy=deny
+desktop.pointer 60 13
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=0 window=0 glyph=1
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Files update=idle pair=unavailable policy=deny
+desktop.pointer 16 12
+[DESKTOP] pointer ok
+desktop.hit
+[DESKTOP] hit kind=1 window=2086405832 glyph=1
+desktop.click
+[DESKTOP] click ok
+desktop.status
+[DESKTOP] status launcher=closed control=open theme=0 selected=Files update=idle pair=unavailable policy=deny
+desktop.control
+[DESKTOP] control ok
+desktop.status
+[DESKTOP] status launcher=closed control=closed theme=0 selected=Files update=idle pair=unavailable policy=deny
+dev@luna:~$ 

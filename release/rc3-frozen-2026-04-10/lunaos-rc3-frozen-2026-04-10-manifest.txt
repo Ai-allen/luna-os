@@ -1,0 +1,57 @@
+LunaOS RC3 Frozen Manifest
+version: rc3-frozen-2026-04-10
+freeze-date: 2026-04-10
+
+[image]
+lunaos-rc3-frozen-2026-04-10-bootx64.efi size=8171
+lunaos-rc3-frozen-2026-04-10-disk.img size=67108864
+lunaos-rc3-frozen-2026-04-10-esp.img size=8388608
+lunaos-rc3-frozen-2026-04-10-installer.iso size=10225664
+lunaos-rc3-frozen-2026-04-10.img size=9515520
+
+[notes]
+lunaos-rc3-frozen-2026-04-10-operations.md
+lunaos-rc3-frozen-2026-04-10-packaging-rules.md
+lunaos-rc3-frozen-2026-04-10-post-rc-roadmap.md
+lunaos-rc3-frozen-2026-04-10-release-gate-checklist.md
+lunaos-rc3-frozen-2026-04-10-release-notes.md
+
+[logs]
+logs\build.log
+logs\fullregression_junit.xml
+logs\fullregression_report.md
+logs\fullregression_steps\bootcheck.log
+logs\fullregression_steps\build.log
+logs\fullregression_steps\desktopcheck.log
+logs\fullregression_steps\metarepaircheck.log
+logs\fullregression_steps\persistencecheck.log
+logs\fullregression_steps\recoverycheck.log
+logs\fullregression_steps\scrubcheck.log
+logs\fullregression_steps\shellcheck.log
+logs\fullregression_steps\uefi-bootcheck.log
+logs\fullregression_steps\uefi-iso-bootcheck.log
+logs\fullregression_steps\uefi-persistencecheck.log
+logs\fullregression_steps\uefi-shellcheck.log
+logs\fullregression_steps\uefi-stabilitycheck.log
+logs\fullregression_summary.json
+logs\qemu_bootcheck.err.log
+logs\qemu_bootcheck.log
+logs\qemu_desktopcheck.err.log
+logs\qemu_desktopcheck.log
+logs\qemu_externalstackcheck.err.log
+logs\qemu_externalstackcheck.log
+logs\qemu_inboundcheck.err.log
+logs\qemu_inboundcheck.log
+logs\qemu_shellcheck.err.log
+logs\qemu_shellcheck.log
+logs\qemu_uefi_bootcheck.debug.log
+logs\qemu_uefi_bootcheck.err.log
+logs\qemu_uefi_bootcheck.log
+logs\qemu_uefi_shellcheck.err.log
+logs\qemu_uefi_shellcheck.log
+logs\qemu_uefi_stabilitycheck.err.log
+logs\qemu_uefi_stabilitycheck.log
+logs\qemu_updateapplycheck_boot1.err.log
+logs\qemu_updateapplycheck_boot1.log
+logs\qemu_updateapplycheck_boot2.err.log
+logs\qemu_updateapplycheck_boot2.log

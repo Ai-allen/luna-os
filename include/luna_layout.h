@@ -1,0 +1,7 @@
+#ifndef LUNA_LAYOUT_H
+#define LUNA_LAYOUT_H
+
+#define LUNA_MANIFEST_ADDR 0x3B0000ull
+#define LUNA_BOOTVIEW_ADDR 0x3B2000ull
+
+#endif

@@ -10,28 +10,8 @@ static uint32_t g_log_count = 0;
 static uint32_t g_log_head = 0;
 static uint32_t g_log_dropped = 0;
 static uint64_t g_stamp = 1;
-
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t value;
-    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-static void serial_putc(char value) {
-    while ((inb(0x3FD) & 0x20) == 0) {
-    }
-    outb(0x3F8, (uint8_t)value);
-}
-
-static void serial_write(const char *text) {
-    while (*text != '\0') {
-        serial_putc(*text++);
-    }
-}
+static struct luna_cid g_device_write_cid = {0, 0};
+static volatile struct luna_manifest *g_manifest = 0;
 
 static void copy_bytes(void *dst, const void *src, size_t len) {
     uint8_t *d = (uint8_t *)dst;
@@ -39,6 +19,60 @@ static void copy_bytes(void *dst, const void *src, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         d[i] = s[i];
     }
+}
+
+static void zero_bytes(void *ptr, size_t len) {
+    uint8_t *out = (uint8_t *)ptr;
+    for (size_t i = 0; i < len; ++i) {
+        out[i] = 0;
+    }
+}
+
+static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 101;
+    gate->opcode = LUNA_GATE_REQUEST_CAP;
+    gate->caller_space = LUNA_SPACE_OBSERVABILITY;
+    gate->domain_key = domain_key;
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    out->low = gate->cid_low;
+    out->high = gate->cid_high;
+    return gate->status;
+}
+
+static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 103;
+    gate->opcode = LUNA_GATE_VALIDATE_CAP;
+    gate->caller_space = 0;
+    gate->domain_key = domain_key;
+    gate->cid_low = cid_low;
+    gate->cid_high = cid_high;
+    gate->target_space = LUNA_SPACE_OBSERVABILITY;
+    gate->target_gate = target_gate;
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    return gate->status;
+}
+
+static void device_write(const char *text) {
+    volatile struct luna_manifest *manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)manifest->device_gate_base;
+    uint64_t size = 0;
+    while (text[size] != '\0') {
+        size += 1u;
+    }
+    zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
+    gate->sequence = 102;
+    gate->opcode = LUNA_DEVICE_WRITE;
+    gate->cid_low = g_device_write_cid.low;
+    gate->cid_high = g_device_write_cid.high;
+    gate->device_id = 1u;
+    gate->buffer_addr = (uint64_t)(uintptr_t)text;
+    gate->buffer_size = size;
+    gate->size = size;
+    ((void (SYSV_ABI *)(struct luna_device_gate *))(uintptr_t)manifest->device_gate_entry)((struct luna_device_gate *)(uintptr_t)manifest->device_gate_base);
 }
 
 static void log_record(uint32_t space_id, uint32_t level, const char *message) {
@@ -61,29 +95,20 @@ static void log_record(uint32_t space_id, uint32_t level, const char *message) {
     }
 }
 
-static int allow_log(uint64_t low, uint64_t high) {
-    return low == 0x6AA10001ull && high == 0x6A008001ull;
-}
-
-static int allow_read(uint64_t low, uint64_t high) {
-    return low == 0x6AA10002ull && high == 0x6A008002ull;
-}
-
-static int allow_stats(uint64_t low, uint64_t high) {
-    return low == 0x6AA10003ull && high == 0x6A008003ull;
-}
-
 void SYSV_ABI observe_entry_boot(const struct luna_bootview *bootview) {
     (void)bootview;
+    g_manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     log_record(LUNA_SPACE_OBSERVABILITY, 1u, "observe online");
-    serial_write("[OBSERVE] ribbon ready\r\n");
+    if (request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) == LUNA_GATE_OK) {
+        device_write("[OBSERVE] ribbon ready\r\n");
+    }
 }
 
 void SYSV_ABI observe_entry_gate(struct luna_observe_gate *gate) {
     gate->result_count = 0;
     gate->status = LUNA_OBSERVE_ERR_INVALID_CAP;
     if (gate->opcode == LUNA_OBSERVE_LOG) {
-        if (!allow_log(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_OBSERVE_LOG, gate->cid_low, gate->cid_high, LUNA_OBSERVE_LOG) != LUNA_GATE_OK) {
             return;
         }
         log_record(gate->space_id, gate->level, gate->message);
@@ -93,7 +118,7 @@ void SYSV_ABI observe_entry_gate(struct luna_observe_gate *gate) {
     if (gate->opcode == LUNA_OBSERVE_GET_LOGS) {
         uint32_t count = 0;
         struct luna_observe_record *out = (struct luna_observe_record *)(uintptr_t)gate->buffer_addr;
-        if (!allow_read(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_OBSERVE_READ, gate->cid_low, gate->cid_high, LUNA_OBSERVE_GET_LOGS) != LUNA_GATE_OK) {
             return;
         }
         while (count < g_log_count && (uint64_t)(count + 1u) * sizeof(*out) <= gate->buffer_size) {
@@ -107,7 +132,8 @@ void SYSV_ABI observe_entry_gate(struct luna_observe_gate *gate) {
     }
     if (gate->opcode == LUNA_OBSERVE_GET_STATS) {
         struct luna_observe_stats *stats = (struct luna_observe_stats *)(uintptr_t)gate->buffer_addr;
-        if (!allow_stats(gate->cid_low, gate->cid_high) || gate->buffer_size < sizeof(*stats)) {
+        if (validate_capability(LUNA_CAP_OBSERVE_STATS, gate->cid_low, gate->cid_high, LUNA_OBSERVE_GET_STATS) != LUNA_GATE_OK ||
+            gate->buffer_size < sizeof(*stats)) {
             return;
         }
         stats->count = g_log_count;

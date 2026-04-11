@@ -1,63 +1,128 @@
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../include/luna_proto.h"
 
 #define SYSV_ABI __attribute__((sysv_abi))
 
-static uint64_t g_boot_tsc = 0;
+static uint64_t g_boot_pulse = 0;
+static struct luna_cid g_device_read_cid = {0, 0};
+static struct luna_cid g_device_write_cid = {0, 0};
+static volatile struct luna_manifest *g_manifest = 0;
 
-static inline void outb(uint16_t port, uint8_t value) {
-    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
+static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
 
-static inline uint8_t inb(uint16_t port) {
-    uint8_t value;
-    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-static inline uint64_t rdtsc_now(void) {
-    uint32_t lo;
-    uint32_t hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-static void serial_putc(char value) {
-    while ((inb(0x3FD) & 0x20) == 0) {
+    for (size_t i = 0; i < sizeof(struct luna_gate); ++i) {
+        ((volatile uint8_t *)(uintptr_t)g_manifest->security_gate_base)[i] = 0;
     }
-    outb(0x3F8, (uint8_t)value);
+    gate->sequence = 80;
+    gate->opcode = LUNA_GATE_REQUEST_CAP;
+    gate->caller_space = LUNA_SPACE_TIME;
+    gate->domain_key = domain_key;
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)g_manifest->security_gate_base
+    );
+    out->low = gate->cid_low;
+    out->high = gate->cid_high;
+    return gate->status;
 }
 
-static void serial_write(const char *text) {
-    while (*text != '\0') {
-        serial_putc(*text++);
+static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    for (size_t i = 0; i < sizeof(struct luna_gate); ++i) {
+        ((volatile uint8_t *)(uintptr_t)g_manifest->security_gate_base)[i] = 0;
     }
+    gate->sequence = 82;
+    gate->opcode = LUNA_GATE_VALIDATE_CAP;
+    gate->caller_space = 0;
+    gate->domain_key = domain_key;
+    gate->cid_low = cid_low;
+    gate->cid_high = cid_high;
+    gate->target_space = LUNA_SPACE_TIME;
+    gate->target_gate = target_gate;
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)g_manifest->security_gate_base
+    );
+    return gate->status;
 }
 
-static int allow_read(uint64_t low, uint64_t high) {
-    return low == 0x68A10001ull && high == 0x68006001ull;
+static void device_write(const char *text) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_device_gate *gate =
+        (volatile struct luna_device_gate *)(uintptr_t)manifest->device_gate_base;
+    uint64_t size = 0;
+
+    while (text[size] != '\0') {
+        size += 1u;
+    }
+    for (size_t i = 0; i < sizeof(struct luna_device_gate); ++i) {
+        ((volatile uint8_t *)(uintptr_t)manifest->device_gate_base)[i] = 0;
+    }
+    gate->sequence = 81;
+    gate->opcode = LUNA_DEVICE_WRITE;
+    gate->cid_low = g_device_write_cid.low;
+    gate->cid_high = g_device_write_cid.high;
+    gate->device_id = LUNA_DEVICE_ID_SERIAL0;
+    gate->buffer_addr = (uint64_t)(uintptr_t)text;
+    gate->buffer_size = size;
+    gate->size = size;
+    ((void (SYSV_ABI *)(struct luna_device_gate *))(uintptr_t)manifest->device_gate_entry)(
+        (struct luna_device_gate *)(uintptr_t)manifest->device_gate_base
+    );
 }
 
-static int allow_chime(uint64_t low, uint64_t high) {
-    return low == 0x68A10002ull && high == 0x68006002ull;
+static uint64_t device_clock_now(void) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_device_gate *gate =
+        (volatile struct luna_device_gate *)(uintptr_t)manifest->device_gate_base;
+    uint64_t value = 0;
+
+    for (size_t i = 0; i < sizeof(struct luna_device_gate); ++i) {
+        ((volatile uint8_t *)(uintptr_t)manifest->device_gate_base)[i] = 0;
+    }
+    gate->sequence = 83;
+    gate->opcode = LUNA_DEVICE_READ;
+    gate->cid_low = g_device_read_cid.low;
+    gate->cid_high = g_device_read_cid.high;
+    gate->device_id = LUNA_DEVICE_ID_CLOCK0;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&value;
+    gate->buffer_size = sizeof(value);
+    gate->size = 0;
+    ((void (SYSV_ABI *)(struct luna_device_gate *))(uintptr_t)manifest->device_gate_entry)(
+        (struct luna_device_gate *)(uintptr_t)manifest->device_gate_base
+    );
+    return gate->status == LUNA_DEVICE_OK ? value : 0;
 }
 
 static uint64_t pulse_ticks(void) {
-    return (rdtsc_now() - g_boot_tsc) / 1000000ull;
+    uint64_t now = device_clock_now();
+    if (now <= g_boot_pulse) {
+        return 0;
+    }
+    return now - g_boot_pulse;
 }
 
 void SYSV_ABI time_entry_boot(const struct luna_bootview *bootview) {
     (void)bootview;
-    g_boot_tsc = rdtsc_now();
-    serial_write("[TIME] pulse ready\r\n");
+    g_manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    if (request_capability(LUNA_CAP_DEVICE_READ, &g_device_read_cid) == LUNA_GATE_OK) {
+        g_boot_pulse = device_clock_now();
+    }
+    if (request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) == LUNA_GATE_OK) {
+        device_write("[TIME] pulse ready\r\n");
+    }
 }
 
 void SYSV_ABI time_entry_gate(struct luna_time_gate *gate) {
     gate->result_count = 0;
     gate->status = LUNA_TIME_ERR_INVALID_CAP;
     if (gate->opcode == LUNA_TIME_READ_PULSE) {
-        if (!allow_read(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_TIME_PULSE, gate->cid_low, gate->cid_high, LUNA_TIME_READ_PULSE) != LUNA_GATE_OK) {
             return;
         }
         gate->arg0 = pulse_ticks();
@@ -67,7 +132,7 @@ void SYSV_ABI time_entry_gate(struct luna_time_gate *gate) {
     }
     if (gate->opcode == LUNA_TIME_SET_CHIME) {
         uint64_t target;
-        if (!allow_chime(gate->cid_low, gate->cid_high)) {
+        if (validate_capability(LUNA_CAP_TIME_CHIME, gate->cid_low, gate->cid_high, LUNA_TIME_SET_CHIME) != LUNA_GATE_OK) {
             return;
         }
         target = pulse_ticks() + gate->arg0;

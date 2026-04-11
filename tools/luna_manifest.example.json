@@ -1,0 +1,19 @@
+{
+  "name": "sample",
+  "bundle_id": 1,
+  "source_id": 0,
+  "signer_id": 0,
+  "version": 1,
+  "flags": 0,
+  "abi_major": 1,
+  "abi_minor": 0,
+  "sdk_major": 1,
+  "sdk_minor": 0,
+  "min_proto": 592,
+  "max_proto": 592,
+  "entry_offset": 96,
+  "capabilities": [
+    "0xA503",
+    "0xD203"
+  ]
+}

@@ -1,0 +1,180 @@
+[LunaLoader] Stage 1 online
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 1 read
+[LunaLoader] Stage 1 copy
+[LunaLoader] Stage 2 loaded
+[BOOT] dawn online
+[BOOT] bootview enter
+[BOOT] bootview done
+[BOOT] fb done
+[BOOT] security enter
+[SECURITY] boot enter
+[SECURITY] seed cid
+[SECURITY] pour cid
+[SECURITY] draw cid
+[SECURITY] gather cid
+[SECURITY] ready
+[BOOT] security return
+[BOOT] request enter
+[BOOT] capability request ok
+[BOOT] roster enter
+[BOOT] capability roster ok
+[BOOT] lifecycle enter
+[LIFECYCLE] ledger online
+[BOOT] lifecycle return
+[BOOT] system enter
+[SYSTEM] atlas online
+[SYSTEM] Spawning DEVICE space...
+[LIFECYCLE] Spawning space  5
+[LIFECYCLE] device boot enter
+[DEVICE] clock ready
+[VIRTKBD] pci missing
+[DEVICE] input ready
+[DEVICE] lane ready
+[LIFECYCLE] device boot return
+[LIFECYCLE] device log enable
+[LIFECYCLE] device log ready
+[SYSTEM] Space 5 ready.
+[SYSTEM] Spawning DATA space...
+[LIFECYCLE] Spawning space  2
+[SYSTEM] Space 2 ready.
+[SYSTEM] Spawning GRAPHICS space...
+[LIFECYCLE] Spawning space  4
+[GRAPHICS] console ready
+[SYSTEM] Space 4 ready.
+[SYSTEM] Spawning NETWORK space...
+[LIFECYCLE] Spawning space  6
+[NETWORK] lunalink ready
+[SYSTEM] Space 6 ready.
+[SYSTEM] Spawning TIME space...
+[LIFECYCLE] Spawning space  8
+[TIME] pulse ready
+[SYSTEM] Space 8 ready.
+[SYSTEM] Spawning OBSERVE space...
+[LIFECYCLE] Spawning space 10
+[OBSERVE] ribbon ready
+[SYSTEM] Space 10 ready.
+[SYSTEM] Spawning PROGRAM space...
+[LIFECYCLE] Spawning space 12
+[SYSTEM] Space 12 ready.
+[SYSTEM] Spawning AI space...
+[LIFECYCLE] Spawning space 11
+[AI] yuesi stub ready
+[SYSTEM] Space 11 ready.
+[SYSTEM] Spawning PACKAGE space...
+[LIFECYCLE] Spawning space 13
+guard
+hello
+files
+notes
+console
+[SYSTEM] Space 13 ready.
+[SYSTEM] Spawning UPDATE space...
+[LIFECYCLE] Spawning space 14
+[UPDATE] wave ready
+[SYSTEM] Space 14 ready.
+[SYSTEM] Spawning USER space...
+[LIFECYCLE] Spawning space  7
+[USERDBG] enter
+[USERDBG] caps ok
+[USERDBG] drain ok
+[USER] shell ready
+[USER] input lane ready
+first-setup required: no hostname or user configured
+setup.init <hostname> <username> <password>
+[USERDBG] msg ok
+setup.init luna dev secret
+setup.init ok: host and first user created
+login ok: session active
+net.info
+network state=ready loopback=available external=outbound-only user=dev host=luna
+network.entry inspect=net.info verify=net.external diagnostics=net.loop
+network.default mode=run status=net.status connect=net.connect send=net.send recv=net.recv
+network.inbound state=ready entry=net.inbound filter=dst-mac|broadcast
+network.stack state=idle entry=net.status connect=net.connect send=net.send recv=net.recv
+net.info driver=11 flags=19 vendor=8086 device=100E
+net.info ctrl=0x0260 status=0x0783 rctl=0x0400C00A tctl=0x000401FA
+net.info mac=52:54:00:12:34:56 mmio=0x0000000010000000
+net.info rx_head=0 rx_tail=7 tx_head=0 tx_tail=0
+net.info hw_rx_head=0 hw_rx_tail=7 hw_tx_head=0 hw_tx_tail=0
+net.info tx_packets=0 rx_packets=0
+net.external
+net.external state=ready scope=outbound-only
+net.external bytes=8 data=luna-ext
+net.external tx_packets=0->1
+net.inbound
+net.inbound state=ready scope=external-raw
+net.inbound bytes=46 src=02:00:00:00:00:01 dst=52:54:00:12:34:56 ethertype=0x88B6
+net.inbound data=luna-inbound-ready............................
+net.inbound rx_packets=0->1 filter=dst-mac|broadcast
+net.inbound
+net.inbound state=ready scope=external-raw
+net.inbound bytes=46 src=02:00:00:00:00:01 dst=52:54:00:12:34:56 ethertype=0x88B6
+net.inbound data=luna-inbound-ready............................
+net.inbound rx_packets=1->2 filter=dst-mac|broadcast
+net.info
+network state=ready loopback=available external=outbound-only user=dev host=luna
+network.entry inspect=net.info verify=net.external diagnostics=net.loop
+network.default mode=run status=net.status connect=net.connect send=net.send recv=net.recv
+network.inbound state=ready entry=net.inbound filter=dst-mac|broadcast event=seen rx_packets=2
+network.stack state=idle entry=net.status connect=net.connect send=net.send recv=net.recv
+net.info driver=11 flags=19 vendor=8086 device=100E
+net.info ctrl=0x0260 status=0x0783 rctl=0x0400C00A tctl=0x000401FA
+net.info mac=52:54:00:12:34:56 mmio=0x0000000010000000
+net.info rx_head=2 rx_tail=1 tx_head=1 tx_tail=1
+net.info hw_rx_head=1 hw_rx_tail=1 hw_tx_head=1 hw_tx_tail=1
+net.info tx_packets=1 rx_packets=2
+dev@luna:~$ 
