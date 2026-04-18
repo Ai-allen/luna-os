@@ -57,6 +57,26 @@ static volatile struct luna_manifest *g_manifest = 0;
 static struct luna_bootview g_bootview = {0};
 static uint8_t g_update_bundle_stage[16384];
 
+#undef memcpy
+#undef memset
+
+void *memcpy(void *dest, const void *src, size_t len) {
+    uint8_t *out = (uint8_t *)dest;
+    const uint8_t *in = (const uint8_t *)src;
+    for (size_t i = 0; i < len; ++i) {
+        out[i] = in[i];
+    }
+    return dest;
+}
+
+void *memset(void *dest, int value, size_t len) {
+    uint8_t *out = (uint8_t *)dest;
+    for (size_t i = 0; i < len; ++i) {
+        out[i] = (uint8_t)value;
+    }
+    return dest;
+}
+
 struct luna_package_state_record {
     uint32_t magic;
     uint32_t version;

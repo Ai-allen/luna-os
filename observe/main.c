@@ -13,6 +13,12 @@ static uint64_t g_stamp = 1;
 static struct luna_cid g_device_write_cid = {0, 0};
 static volatile struct luna_manifest *g_manifest = 0;
 
+static uint32_t validate_capability_for(uint64_t domain_key,
+                                        uint64_t cid_low,
+                                        uint64_t cid_high,
+                                        uint32_t target_gate,
+                                        uint64_t caller_space);
+
 static void copy_bytes(void *dst, const void *src, size_t len) {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
@@ -42,16 +48,32 @@ static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
 }
 
 static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+    return validate_capability_for(domain_key, cid_low, cid_high, target_gate, 0u);
+}
+
+static uint32_t validate_capability_for(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate, uint64_t caller_space) {
     volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
     zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 103;
     gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->caller_space = caller_space;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
     gate->target_space = LUNA_SPACE_OBSERVABILITY;
     gate->target_gate = target_gate;
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    return gate->status;
+}
+
+static uint32_t security_query_govern(uint64_t caller_space, struct luna_query_request *request) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 104;
+    gate->opcode = LUNA_GATE_QUERY_GOVERN;
+    gate->caller_space = caller_space;
+    gate->buffer_addr = (uint64_t)(uintptr_t)request;
+    gate->buffer_size = sizeof(*request);
     ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
     return gate->status;
 }
@@ -142,6 +164,41 @@ void SYSV_ABI observe_entry_gate(struct luna_observe_gate *gate) {
         stats->reserved0 = 0u;
         stats->newest_stamp = g_stamp - 1u;
         gate->result_count = 1u;
+        gate->status = LUNA_OBSERVE_OK;
+        return;
+    }
+    if (gate->opcode == LUNA_OBSERVE_QUERY) {
+        struct luna_query_request *request = (struct luna_query_request *)(uintptr_t)gate->buffer_addr;
+        struct luna_query_row *out;
+        uint32_t copied = 0u;
+        uint32_t available = 0u;
+        uint32_t limit = 0u;
+        if (gate->buffer_size < sizeof(*request) ||
+            validate_capability_for(LUNA_CAP_OBSERVE_READ, gate->cid_low, gate->cid_high, LUNA_OBSERVE_QUERY, gate->space_id) != LUNA_GATE_OK ||
+            security_query_govern(gate->space_id, request) != LUNA_GATE_OK ||
+            request->target != LUNA_QUERY_TARGET_OBSERVE_LOGS) {
+            return;
+        }
+        out = (struct luna_query_row *)(uintptr_t)(gate->buffer_addr + sizeof(*request));
+        gate->buffer_size -= sizeof(*request);
+        available = (uint32_t)(gate->buffer_size / sizeof(*out));
+        limit = request->limit == 0u ? available : request->limit;
+        for (uint32_t i = 0u; i < g_log_count && copied < available && copied < limit; ++i) {
+            uint32_t index = (g_log_head + LUNA_OBSERVE_LOG_CAPACITY - 1u - i) % LUNA_OBSERVE_LOG_CAPACITY;
+            struct luna_query_row row;
+            zero_bytes(&row, sizeof(row));
+            row.owner_low = g_logs[index].space_id;
+            row.created_at = g_logs[index].stamp;
+            row.updated_at = g_logs[index].stamp;
+            row.namespace_id = LUNA_QUERY_NAMESPACE_OBSERVE;
+            row.object_type = 0u;
+            row.state = g_logs[index].level;
+            copy_bytes(row.message, g_logs[index].message, sizeof(row.message));
+            copy_bytes(&out[copied], &row, sizeof(row));
+            copied += 1u;
+        }
+        log_record(LUNA_SPACE_OBSERVABILITY, 1u, "audit lasql.query logs");
+        gate->result_count = copied;
         gate->status = LUNA_OBSERVE_OK;
     }
 }

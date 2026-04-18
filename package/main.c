@@ -242,7 +242,7 @@ static const struct builtin_package_spec g_builtin_specs[] = {
     { "files", "Files", 3u, 4u, LUNA_PACKAGE_FLAG_PINNED | LUNA_PACKAGE_FLAG_STARTUP, 2u, 2u, 26u, 9u, LUNA_WINDOW_ROLE_DOCUMENT, 1u },
     { "notes", "Notes", 3u, 8u, LUNA_PACKAGE_FLAG_PINNED, 29u, 2u, 27u, 9u, LUNA_WINDOW_ROLE_DOCUMENT, 1u },
     { "guard", "Guard", 3u, 12u, LUNA_PACKAGE_FLAG_PINNED, 57u, 2u, 21u, 11u, LUNA_WINDOW_ROLE_UTILITY, 1u },
-    { "console", "Console", 3u, 16u, LUNA_PACKAGE_FLAG_PINNED | LUNA_PACKAGE_FLAG_STARTUP, 2u, 12u, 37u, 11u, LUNA_WINDOW_ROLE_CONSOLE, 1u },
+    { "console", "Console", 3u, 16u, LUNA_PACKAGE_FLAG_PINNED, 2u, 12u, 37u, 11u, LUNA_WINDOW_ROLE_CONSOLE, 1u },
 };
 
 static struct luna_package_record g_catalog[LUNA_PACKAGE_CAPACITY];
@@ -254,11 +254,13 @@ static struct luna_package_install_record g_install_record_stage;
 static struct luna_package_index_record g_index_record_stage;
 static struct luna_object_ref g_member_stage;
 static struct luna_cid g_device_write_cid = {0, 0};
+static struct luna_cid g_package_install_cid = {0, 0};
 static struct luna_cid g_data_seed_cid = {0, 0};
 static struct luna_cid g_data_pour_cid = {0, 0};
 static struct luna_cid g_data_draw_cid = {0, 0};
 static struct luna_cid g_data_shred_cid = {0, 0};
 static struct luna_cid g_data_gather_cid = {0, 0};
+static struct luna_cid g_data_query_cid = {0, 0};
 static volatile struct luna_manifest *g_manifest = 0;
 static struct luna_object_ref g_installed_apps_set = {0, 0};
 static struct luna_object_ref g_install_records_set = {0, 0};
@@ -272,6 +274,9 @@ static struct luna_object_ref g_rollback_refs_set = {0, 0};
 static struct luna_object_ref g_package_state_object = {0, 0};
 
 static int ensure_package_sets(void);
+static uint32_t query_catalog_rows(struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count);
+static void fill_record_from_query_row(struct luna_package_record *record, const struct luna_query_row *row);
+static int find_catalog_row_by_name(const char request_name[16], struct luna_query_row *out_row);
 static int find_index_record_by_name(
     const char request_name[16],
     struct luna_object_ref *out_ref,
@@ -713,6 +718,50 @@ static uint32_t security_policy_query(uint32_t policy_type, uint64_t target_id, 
     return gate->status;
 }
 
+static uint32_t security_trust_eval_bundle(const struct luna_app_metadata *meta, const void *blob, uint64_t blob_size, struct luna_trust_eval_request *out_request) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    struct luna_trust_eval_request request;
+
+    if (meta == 0 || blob == 0 || blob_size == 0u) {
+        return LUNA_GATE_DENIED;
+    }
+    zero_bytes(&request, sizeof(request));
+    request.flags = meta->flags;
+    request.abi_major = meta->abi_major;
+    request.abi_minor = meta->abi_minor;
+    request.sdk_major = meta->sdk_major;
+    request.sdk_minor = meta->sdk_minor;
+    request.bundle_id = meta->bundle_id;
+    request.source_id = meta->source_id;
+    request.signer_id = meta->signer_id;
+    request.app_version = meta->app_version;
+    request.integrity_check = meta->integrity_check;
+    request.header_bytes = meta->header_bytes;
+    request.entry_offset = meta->entry_offset;
+    request.signature_check = meta->signature_check;
+    request.blob_addr = (uint64_t)(uintptr_t)blob;
+    request.blob_size = blob_size;
+    request.capability_count = meta->capability_count;
+    request.min_proto_version = meta->min_proto_version;
+    request.max_proto_version = meta->max_proto_version;
+    copy_bytes(request.name, meta->name, sizeof(request.name));
+    copy_bytes(request.capability_keys, meta->capability_keys, sizeof(request.capability_keys));
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 78;
+    gate->opcode = LUNA_GATE_TRUST_EVAL;
+    gate->caller_space = LUNA_SPACE_PACKAGE;
+    gate->domain_key = LUNA_CAP_PACKAGE_INSTALL;
+    gate->cid_low = g_package_install_cid.low;
+    gate->cid_high = g_package_install_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&request;
+    gate->buffer_size = sizeof(request);
+    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    if (out_request != 0) {
+        copy_bytes(out_request, &request, sizeof(request));
+    }
+    return gate->status;
+}
+
 static void device_write(const char *text) {
     volatile struct luna_manifest *manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)manifest->device_gate_base;
@@ -993,7 +1042,7 @@ static void fill_builtin_catalog(void) {
     install_builtin(1u, "files.luna", "Files", 3u, 4u, LUNA_PACKAGE_FLAG_PINNED | LUNA_PACKAGE_FLAG_STARTUP, 2u, 2u, 26u, 9u, LUNA_WINDOW_ROLE_DOCUMENT, 1u);
     install_builtin(2u, "notes.luna", "Notes", 3u, 8u, LUNA_PACKAGE_FLAG_PINNED, 29u, 2u, 27u, 9u, LUNA_WINDOW_ROLE_DOCUMENT, 1u);
     install_builtin(3u, "guard.luna", "Guard", 3u, 12u, LUNA_PACKAGE_FLAG_PINNED, 57u, 2u, 21u, 11u, LUNA_WINDOW_ROLE_UTILITY, 1u);
-    install_builtin(4u, "console.luna", "Console", 3u, 16u, LUNA_PACKAGE_FLAG_PINNED | LUNA_PACKAGE_FLAG_STARTUP, 2u, 12u, 37u, 11u, LUNA_WINDOW_ROLE_CONSOLE, 1u);
+    install_builtin(4u, "console.luna", "Console", 3u, 16u, LUNA_PACKAGE_FLAG_PINNED, 2u, 12u, 37u, 11u, LUNA_WINDOW_ROLE_CONSOLE, 1u);
 }
 
 static const struct builtin_package_spec *find_builtin_spec(const char name[16]) {
@@ -1163,6 +1212,117 @@ static void fill_record_from_meta(struct luna_package_record *record, const stru
     }
     record->installed = 1u;
     record->version = meta->app_version;
+}
+
+static uint32_t query_catalog_rows(struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_data_gate *gate =
+        (volatile struct luna_data_gate *)(uintptr_t)manifest->data_gate_base;
+    uint8_t *payload = g_app_metadata_blob;
+    struct luna_query_request request;
+    uint32_t count = 0u;
+    uint64_t payload_size = 0u;
+
+    if (out_count != 0) {
+        *out_count = 0u;
+    }
+    if (out_rows == 0 || capacity == 0u || g_data_query_cid.low == 0u || manifest->data_gate_base == 0u) {
+        return LUNA_DATA_ERR_RANGE;
+    }
+    if (capacity > LUNA_PACKAGE_CAPACITY) {
+        capacity = LUNA_PACKAGE_CAPACITY;
+    }
+    payload_size = sizeof(request) + ((uint64_t)capacity * sizeof(struct luna_query_row));
+    if (payload_size > sizeof(g_app_metadata_blob)) {
+        return LUNA_DATA_ERR_RANGE;
+    }
+
+    zero_bytes(&request, sizeof(request));
+    request.target = LUNA_QUERY_TARGET_PACKAGE_CATALOG;
+    request.filter_flags = LUNA_QUERY_FILTER_NAMESPACE;
+    request.projection_flags =
+        LUNA_QUERY_PROJECT_NAME |
+        LUNA_QUERY_PROJECT_LABEL |
+        LUNA_QUERY_PROJECT_REF |
+        LUNA_QUERY_PROJECT_TYPE |
+        LUNA_QUERY_PROJECT_STATE |
+        LUNA_QUERY_PROJECT_VERSION;
+    request.sort_mode = LUNA_QUERY_SORT_NAME_ASC;
+    request.limit = capacity;
+    request.namespace_id = LUNA_QUERY_NAMESPACE_PACKAGE;
+
+    zero_bytes(payload, (size_t)payload_size);
+    copy_bytes(payload, &request, sizeof(request));
+    zero_bytes((void *)(uintptr_t)manifest->data_gate_base, sizeof(struct luna_data_gate));
+    gate->sequence = 92u;
+    gate->opcode = LUNA_DATA_QUERY;
+    gate->cid_low = g_data_query_cid.low;
+    gate->cid_high = g_data_query_cid.high;
+    gate->writer_space = LUNA_SPACE_PACKAGE;
+    gate->buffer_addr = (uint64_t)(uintptr_t)payload;
+    gate->buffer_size = payload_size;
+    ((data_gate_fn_t)(uintptr_t)manifest->data_gate_entry)(
+        (struct luna_data_gate *)(uintptr_t)manifest->data_gate_base
+    );
+    if (gate->status != LUNA_DATA_OK) {
+        return gate->status;
+    }
+
+    count = gate->result_count;
+    if (count > capacity) {
+        count = capacity;
+    }
+    copy_bytes(out_rows, payload + sizeof(request), (size_t)count * sizeof(struct luna_query_row));
+    if (out_count != 0) {
+        *out_count = count;
+    }
+    return LUNA_DATA_OK;
+}
+
+static void fill_record_from_query_row(struct luna_package_record *record, const struct luna_query_row *row) {
+    const struct builtin_package_spec *builtin = find_builtin_spec(row->name);
+    zero_bytes(record, sizeof(*record));
+    copy_name_with_suffix(record->name, row->name, ".luna");
+    if (builtin != 0) {
+        copy_name16(record->label, builtin->label);
+        record->icon_x = builtin->icon_x;
+        record->icon_y = builtin->icon_y;
+        record->flags = builtin->flags | row->flags;
+        record->preferred_x = builtin->preferred_x;
+        record->preferred_y = builtin->preferred_y;
+        record->preferred_width = builtin->preferred_width;
+        record->preferred_height = builtin->preferred_height;
+        record->window_role = builtin->window_role;
+    } else {
+        if (row->label[0] != '\0') {
+            copy_name16(record->label, row->label);
+        } else {
+            copy_name16(record->label, row->name);
+        }
+        record->flags = row->flags;
+    }
+    record->installed = 1u;
+    record->version = row->version;
+}
+
+static int find_catalog_row_by_name(const char request_name[16], struct luna_query_row *out_row) {
+    struct luna_query_row rows[LUNA_PACKAGE_CAPACITY];
+    uint32_t count = 0u;
+    if (query_catalog_rows(rows, LUNA_PACKAGE_CAPACITY, &count) != LUNA_DATA_OK) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < count; ++i) {
+        if (!app_name_matches(rows[i].name, request_name) &&
+            !app_name_matches(request_name, rows[i].name)) {
+            continue;
+        }
+        if (out_row != 0) {
+            *out_row = rows[i];
+        }
+        return 1;
+    }
+    return 0;
 }
 
 static int load_package_state(void) {
@@ -2051,38 +2211,33 @@ static int register_package_blob(const void *blob, uint64_t blob_size) {
         device_write("audit package.install denied reason=proto-range\r\n");
         return 0;
     }
-    if (meta.source_id != 0u && (meta.signer_id == 0u || meta.signature_check == 0u)) {
-        device_write("audit package.install denied reason=unsigned-source\r\n");
-        return 0;
-    }
-    if (meta.source_id == 0u) {
-        if (!source_is_trusted(0u, 0u)) {
-            device_write("audit package.install denied reason=source-trust\r\n");
-            return 0;
-        }
-    } else {
-        uint32_t policy_state = 0u;
-        uint64_t binding_id = 0u;
-        if (!signer_is_trusted(meta.signer_id)) {
-            device_write("audit package.install denied reason=signer-root\r\n");
-            return 0;
-        }
-        if (!source_is_trusted(meta.source_id, meta.signer_id)) {
-            device_write("audit package.install denied reason=source-trust\r\n");
-            return 0;
-        }
-        if (security_policy_query(LUNA_POLICY_TYPE_SIGNER, meta.signer_id, &policy_state, 0, 0) != LUNA_GATE_OK ||
-            policy_state != LUNA_POLICY_STATE_ALLOW) {
-            device_write("audit package.install denied reason=signer-policy\r\n");
-            return 0;
-        }
-        if (security_policy_query(LUNA_POLICY_TYPE_SOURCE, meta.source_id, &policy_state, 0, &binding_id) != LUNA_GATE_OK ||
-            policy_state != LUNA_POLICY_STATE_ALLOW) {
-            device_write("audit package.install denied reason=source-policy\r\n");
-            return 0;
-        }
-        if (binding_id != 0u && binding_id != meta.signer_id) {
-            device_write("audit package.install denied reason=source-signer-binding\r\n");
+    {
+        struct luna_trust_eval_request trust;
+        zero_bytes(&trust, sizeof(trust));
+        if (security_trust_eval_bundle(&meta, stable_blob_input, blob_size, &trust) != LUNA_GATE_OK) {
+            switch (trust.result_state) {
+                case LUNA_TRUST_RESULT_PROTO:
+                    device_write("audit package.install denied reason=proto-range\r\n");
+                    break;
+                case LUNA_TRUST_RESULT_INTEGRITY:
+                    device_write("audit package.install denied reason=bundle-integrity\r\n");
+                    break;
+                case LUNA_TRUST_RESULT_SIGNATURE:
+                    device_write("audit package.install denied reason=signature\r\n");
+                    break;
+                case LUNA_TRUST_RESULT_SIGNER:
+                    device_write("audit package.install denied reason=signer-policy\r\n");
+                    break;
+                case LUNA_TRUST_RESULT_SOURCE:
+                    device_write("audit package.install denied reason=source-policy\r\n");
+                    break;
+                case LUNA_TRUST_RESULT_BINDING:
+                    device_write("audit package.install denied reason=source-signer-binding\r\n");
+                    break;
+                default:
+                    device_write("audit package.install denied reason=security-trust\r\n");
+                    break;
+            }
             return 0;
         }
     }
@@ -2339,17 +2494,26 @@ void SYSV_ABI package_entry_boot(const struct luna_bootview *bootview) {
     uint32_t installed_valid = 0u;
     uint32_t install_record_raw = 0u;
     uint32_t catalog_count = 0u;
-    (void)bootview;
+    int installer_mode = bootview != 0 && bootview->system_mode == LUNA_MODE_INSTALL;
     g_manifest = (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     fill_builtin_catalog();
     if (request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) == LUNA_GATE_OK) {
         device_write("[PACKAGE] catalog ready\r\n");
     }
+    (void)request_capability(LUNA_CAP_PACKAGE_INSTALL, &g_package_install_cid);
     (void)request_capability(LUNA_CAP_DATA_SEED, &g_data_seed_cid);
     (void)request_capability(LUNA_CAP_DATA_POUR, &g_data_pour_cid);
     (void)request_capability(LUNA_CAP_DATA_DRAW, &g_data_draw_cid);
     (void)request_capability(LUNA_CAP_DATA_SHRED, &g_data_shred_cid);
     (void)request_capability(LUNA_CAP_DATA_GATHER, &g_data_gather_cid);
+    (void)request_capability(LUNA_CAP_DATA_QUERY, &g_data_query_cid);
+    if (installer_mode) {
+        device_write("[PACKAGE] installer isolation active\r\n");
+        device_write("[PACKAGE] bootstrap skipped install-mode\r\n");
+        device_write("[PACKAGE] catalog builtin-only\r\n");
+        device_write("[PACKAGE] boot done\r\n");
+        return;
+    }
     device_write("[PACKAGE] state load\r\n");
     (void)load_package_state();
     device_write("[PACKAGE] bootstrap\r\n");
@@ -2477,6 +2641,7 @@ void SYSV_ABI package_entry_gate(struct luna_package_gate *gate) {
 
     if (gate->opcode == LUNA_PACKAGE_LIST) {
         struct luna_package_record *out = (struct luna_package_record *)(uintptr_t)gate->buffer_addr;
+        struct luna_query_row rows[LUNA_PACKAGE_CAPACITY];
         uint32_t copied = 0u;
         uint32_t available = 0u;
         if (validate_capability(LUNA_CAP_PACKAGE_LIST, gate->cid_low, gate->cid_high, LUNA_PACKAGE_LIST) != LUNA_GATE_OK) {
@@ -2486,17 +2651,20 @@ void SYSV_ABI package_entry_gate(struct luna_package_gate *gate) {
             gate->status = LUNA_PACKAGE_ERR_NO_ROOM;
             return;
         }
-        available = build_installed_catalog();
+        if (query_catalog_rows(rows, LUNA_PACKAGE_CAPACITY, &available) != LUNA_DATA_OK) {
+            gate->status = LUNA_PACKAGE_ERR_NOT_FOUND;
+            return;
+        }
+        zero_bytes(g_catalog, sizeof(g_catalog));
         for (uint32_t i = 0u; i < available; ++i) {
-            if (g_catalog[i].installed == 0u) {
-                continue;
-            }
+            fill_record_from_query_row(&g_catalog[copied], &rows[i]);
             if (((uint64_t)(copied + 1u) * sizeof(g_catalog[0])) > gate->buffer_size) {
                 break;
             }
             copy_bytes(&out[copied], &g_catalog[i], sizeof(g_catalog[0]));
             copied += 1u;
         }
+        device_write("audit package.query source=lasql kind=list\r\n");
         gate->result_count = copied;
         gate->status = LUNA_PACKAGE_OK;
         return;
@@ -2505,13 +2673,34 @@ void SYSV_ABI package_entry_gate(struct luna_package_gate *gate) {
     if (gate->opcode == LUNA_PACKAGE_RESOLVE) {
         struct luna_object_ref installed_ref = {0u, 0u};
         struct luna_app_metadata installed_meta;
+        struct luna_query_row catalog_row;
         struct luna_package_index_record index_record;
+        struct luna_package_install_record install_record;
+        struct luna_object_ref install_ref = {0u, 0u};
         struct luna_package_resolve_record *out = (struct luna_package_resolve_record *)(uintptr_t)gate->buffer_addr;
         if (validate_capability(LUNA_CAP_PACKAGE_LIST, gate->cid_low, gate->cid_high, LUNA_PACKAGE_RESOLVE) != LUNA_GATE_OK) {
             return;
         }
         if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(*out)) {
             gate->status = LUNA_PACKAGE_ERR_NO_ROOM;
+            return;
+        }
+        zero_bytes(&catalog_row, sizeof(catalog_row));
+        if (find_catalog_row_by_name(gate->name, &catalog_row)) {
+            if (!find_install_record_by_name(catalog_row.name, &install_ref, &install_record)) {
+                gate->status = LUNA_PACKAGE_ERR_NOT_FOUND;
+                return;
+            }
+            zero_bytes(out, sizeof(*out));
+            copy_bytes(out->name, catalog_row.name, sizeof(out->name));
+            out->flags = catalog_row.flags;
+            out->version = catalog_row.version;
+            out->app_object = install_record.app_object;
+            out->install_object = install_ref;
+            gate->result_count = 1u;
+            gate->status = LUNA_PACKAGE_OK;
+            device_write("audit package.query source=lasql kind=resolve\r\n");
+            device_write_ref_line("[PACKAGE] resolve app", out->app_object);
             return;
         }
         if (!find_index_record_by_name(gate->name, 0, &index_record)) {

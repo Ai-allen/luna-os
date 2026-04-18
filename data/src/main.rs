@@ -31,6 +31,7 @@ const LARGE_MAX_EXTENTS: usize = 19;
 const GATE_REQUEST_CAP: u32 = 1;
 const GATE_VALIDATE_CAP: u32 = 6;
 const SPACE_DATA: u64 = 2;
+const SPACE_USER: u64 = 7;
 const CAP_DEVICE_READ: u64 = 0xA502;
 const CAP_DEVICE_WRITE: u64 = 0xA503;
 
@@ -39,6 +40,8 @@ const CAP_DATA_POUR: u64 = 0xD202;
 const CAP_DATA_DRAW: u64 = 0xD203;
 const CAP_DATA_SHRED: u64 = 0xD204;
 const CAP_DATA_GATHER: u64 = 0xD205;
+const CAP_DATA_QUERY: u64 = 0xD206;
+const CAP_OBSERVE_LOG: u64 = 0xAA01;
 
 const OP_SEED: u32 = 1;
 const OP_POUR: u32 = 2;
@@ -49,6 +52,8 @@ const OP_STAT: u32 = 6;
 const OP_VERIFY: u32 = 7;
 const OP_SET_ADD: u32 = 8;
 const OP_SET_REMOVE: u32 = 9;
+const OP_QUERY: u32 = 10;
+const GATE_QUERY_GOVERN: u32 = 17;
 
 const STATUS_OK: u32 = 0;
 const STATUS_INVALID_CAP: u32 = 0xD100;
@@ -81,6 +86,23 @@ const VERIFY_FLAG_INVALID_RECORDS: u32 = 8;
 const STATUS_DENIED: u32 = 0xD106;
 const STATUS_READONLY: u32 = 0xD107;
 const STATUS_RECOVERY: u32 = 0xD108;
+const QUERY_TARGET_PACKAGE_CATALOG: u32 = 1;
+const QUERY_TARGET_USER_FILES: u32 = 2;
+const QUERY_NAMESPACE_PACKAGE: u32 = 1;
+const QUERY_NAMESPACE_USER: u32 = 2;
+const QUERY_STATE_ANY: u32 = 0;
+const QUERY_STATE_ACTIVE: u32 = 1;
+const QUERY_SORT_NAME_ASC: u32 = 1;
+const QUERY_SORT_CREATED_DESC: u32 = 2;
+const QUERY_SORT_UPDATED_DESC: u32 = 3;
+const QUERY_FLAG_AUDIT_REQUIRED: u32 = 1;
+const PACKAGE_INSTALL_MAGIC: u32 = 0x504B_4749;
+const PACKAGE_INSTALL_VERSION: u32 = 1;
+const USER_THEME_OBJECT_TYPE: u32 = 0x4C54_484D;
+const USER_NOTE_OBJECT_TYPE: u32 = 0x4C4E_4F54;
+const USER_HOME_ROOT_OBJECT_TYPE: u32 = 0x4C55_484D;
+const USER_PROFILE_OBJECT_TYPE: u32 = 0x4C55_5046;
+const USER_FILES_VIEW_OBJECT_TYPE: u32 = 0x4C46_564D;
 const GOVERN_OP: u32 = 12;
 const VOLUME_HEALTHY: u32 = 1;
 const VOLUME_DEGRADED: u32 = 2;
@@ -110,6 +132,18 @@ const TXN_STATE_APPLIED: u32 = 3;
 const TXN_KIND_OBJECT_UPDATE: u32 = 1;
 const TXN_KIND_SET_UPDATE: u32 = 2;
 const TXN_KIND_NAMESPACE_UPDATE: u32 = 3;
+const META_PHASE_NONE: u32 = 0;
+const META_PHASE_BEGIN_DIRTY: u32 = 1;
+const META_PHASE_COMMIT_CLEAN: u32 = 2;
+const META_PHASE_ROLLBACK_RESTORE: u32 = 3;
+const MUTATION_KIND_NONE: u32 = 0;
+const MUTATION_KIND_SEED: u32 = 1;
+const MUTATION_KIND_POUR_SEED: u32 = 2;
+const MUTATION_KIND_POUR_TXN: u32 = 3;
+const MUTATION_KIND_SET_ADD: u32 = 4;
+const MUTATION_KIND_SET_REMOVE: u32 = 5;
+const MUTATION_KIND_SHRED: u32 = 6;
+const MUTATION_KIND_FORMAT: u32 = 7;
 
 #[repr(C)]
 pub struct LunaDataGate {
@@ -258,11 +292,17 @@ static mut LAST_MUTATION_DEBUG: u64 = 0;
 static mut LAST_DRAW_DEBUG: u64 = 0;
 static mut LAST_DRAW_VALUE0: u64 = 0;
 static mut LAST_DRAW_VALUE1: u64 = 0;
+static mut LAST_META_PHASE: u32 = META_PHASE_NONE;
+static mut LAST_MUTATION_KIND: u32 = MUTATION_KIND_NONE;
+static mut LAST_MUTATION_OBJECT_TYPE: u32 = 0;
+static mut LAST_MUTATION_INDEX: u32 = 0;
 static mut SET_BUFFER: [u8; SET_BUFFER_BYTES] = [0; SET_BUFFER_BYTES];
 static mut DEVICE_READ_LOW: u64 = 0;
 static mut DEVICE_READ_HIGH: u64 = 0;
 static mut DEVICE_WRITE_LOW: u64 = 0;
 static mut DEVICE_WRITE_HIGH: u64 = 0;
+static mut OBSERVE_LOG_LOW: u64 = 0;
+static mut OBSERVE_LOG_HIGH: u64 = 0;
 
 const EMPTY_SET_HEADER: SetHeader = SetHeader {
     magic: SET_MAGIC,
@@ -341,6 +381,35 @@ struct LunaDeviceGate {
     buffer_size: u64,
 }
 
+#[repr(C)]
+struct LunaObserveGate {
+    sequence: u32,
+    opcode: u32,
+    status: u32,
+    space_id: u32,
+    level: u32,
+    result_count: u32,
+    cid_low: u64,
+    cid_high: u64,
+    start_time: u64,
+    end_time: u64,
+    buffer_addr: u64,
+    buffer_size: u64,
+    message: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct PackageInstallRecord {
+    magic: u32,
+    version: u32,
+    flags: u32,
+    reserved0: u32,
+    app_version: u64,
+    app_object: ObjectRef,
+    name: [u8; 16],
+}
+
 unsafe fn object_ptr(index: usize) -> *mut ObjectRecord {
     unsafe { (addr_of_mut!(OBJECTS) as *mut ObjectRecord).add(index) }
 }
@@ -373,12 +442,16 @@ fn request_cap(domain_key: u64, out_low: &mut u64, out_high: &mut u64) -> bool {
 }
 
 fn validate_cap(domain_key: u64, cid_low: u64, cid_high: u64, target_gate: u32) -> bool {
+    validate_cap_for(domain_key, cid_low, cid_high, target_gate, 0)
+}
+
+fn validate_cap_for(domain_key: u64, cid_low: u64, cid_high: u64, target_gate: u32, caller_space: u64) -> bool {
     let manifest = manifest();
     let gate = unsafe { &mut *(manifest.security_gate_base as *mut LunaGate) };
     unsafe { write_bytes(gate as *mut LunaGate as *mut u8, 0, size_of::<LunaGate>()); }
     gate.sequence = 41;
     gate.opcode = GATE_VALIDATE_CAP;
-    gate.caller_space = 0;
+    gate.caller_space = caller_space;
     gate.domain_key = domain_key;
     gate.cid_low = cid_low;
     gate.cid_high = cid_high;
@@ -390,8 +463,27 @@ fn validate_cap(domain_key: u64, cid_low: u64, cid_high: u64, target_gate: u32) 
     gate.status == 0
 }
 
+fn security_query_govern(caller_space: u64, request: &mut LunaQueryRequest) -> bool {
+    let manifest = manifest();
+    let gate = unsafe { &mut *(manifest.security_gate_base as *mut LunaGate) };
+    unsafe { write_bytes(gate as *mut LunaGate as *mut u8, 0, size_of::<LunaGate>()); }
+    gate.sequence = 43;
+    gate.opcode = GATE_QUERY_GOVERN;
+    gate.caller_space = caller_space;
+    gate.buffer_addr = (request as *mut LunaQueryRequest) as u64;
+    gate.buffer_size = size_of::<LunaQueryRequest>() as u64;
+    let entry: extern "sysv64" fn(*mut LunaGate) =
+        unsafe { core::mem::transmute(manifest.security_gate_entry as usize as *const ()) };
+    entry(gate as *mut LunaGate);
+    gate.status == 0
+}
+
 fn bootview() -> &'static mut LunaBootView {
     unsafe { &mut *(manifest().bootview_base as *mut LunaBootView) }
+}
+
+fn installer_mode_active() -> bool {
+    bootview().system_mode == MODE_INSTALL
 }
 
 fn store_base_lba() -> u32 {
@@ -520,6 +612,28 @@ fn device_call(gate: &mut LunaDeviceGate) {
     entry(gate as *mut LunaDeviceGate);
 }
 
+fn observe_log(message: &[u8]) -> bool {
+    let manifest = manifest();
+    let gate = unsafe { &mut *(manifest.observe_gate_base as *mut LunaObserveGate) };
+    unsafe { write_bytes(gate as *mut LunaObserveGate as *mut u8, 0, size_of::<LunaObserveGate>()); }
+    gate.sequence = 44;
+    gate.opcode = 1;
+    gate.space_id = SPACE_DATA as u32;
+    gate.level = 1;
+    gate.cid_low = unsafe { OBSERVE_LOG_LOW };
+    gate.cid_high = unsafe { OBSERVE_LOG_HIGH };
+    let limit = core::cmp::min(message.len(), gate.message.len().saturating_sub(1));
+    let mut i = 0usize;
+    while i < limit {
+        gate.message[i] = message[i];
+        i += 1;
+    }
+    let entry: extern "sysv64" fn(*mut LunaObserveGate) =
+        unsafe { core::mem::transmute(manifest.observe_gate_entry as usize as *const ()) };
+    entry(gate as *mut LunaObserveGate);
+    gate.status == 0
+}
+
 fn device_write(text: &[u8]) -> bool {
     let _ = text;
     true
@@ -554,6 +668,131 @@ fn device_write_hex(prefix: &[u8], value: u64) {
     line[cursor] = b'\r';
     line[cursor + 1] = b'\n';
     let _ = device_write(&line[..cursor + 2]);
+}
+
+fn meta_phase_label(phase: u32) -> &'static [u8] {
+    match phase {
+        META_PHASE_BEGIN_DIRTY => b"begin-dirty",
+        META_PHASE_COMMIT_CLEAN => b"commit-clean",
+        META_PHASE_ROLLBACK_RESTORE => b"rollback-restore",
+        _ => b"none",
+    }
+}
+
+fn mutation_kind_label(kind: u32) -> &'static [u8] {
+    match kind {
+        MUTATION_KIND_SEED => b"seed",
+        MUTATION_KIND_POUR_SEED => b"pour-seed",
+        MUTATION_KIND_POUR_TXN => b"pour-txn",
+        MUTATION_KIND_SET_ADD => b"set-add",
+        MUTATION_KIND_SET_REMOVE => b"set-remove",
+        MUTATION_KIND_SHRED => b"shred",
+        MUTATION_KIND_FORMAT => b"format",
+        _ => b"none",
+    }
+}
+
+fn object_type_label(object_type: u32) -> &'static [u8] {
+    match object_type {
+        OBJECT_TYPE_SET => b"set",
+        OBJECT_TYPE_NAMESPACE => b"namespace",
+        LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL => b"package-install",
+        LUNA_DATA_OBJECT_TYPE_PACKAGE_INDEX => b"package-index",
+        LUNA_DATA_OBJECT_TYPE_DRIVER_BIND => b"driver-bind",
+        USER_NOTE_OBJECT_TYPE => b"user-note",
+        USER_THEME_OBJECT_TYPE => b"user-theme",
+        USER_HOME_ROOT_OBJECT_TYPE => b"user-home",
+        USER_PROFILE_OBJECT_TYPE => b"user-profile",
+        USER_FILES_VIEW_OBJECT_TYPE => b"user-files",
+        _ => b"other",
+    }
+}
+
+unsafe fn set_mutation_context(kind: u32, object_type: u32, index: usize) {
+    unsafe {
+        LAST_MUTATION_KIND = kind;
+        LAST_MUTATION_OBJECT_TYPE = object_type;
+        LAST_MUTATION_INDEX = index as u32;
+    }
+}
+
+fn metadata_object_record_bounds(lba: u32) -> Option<(usize, usize)> {
+    let base = store_base_lba() + 1;
+    if lba < base || lba >= txn_log_lba() {
+        return None;
+    }
+    let record_bytes = size_of::<ObjectRecord>();
+    let start_byte = (lba - base) as usize * 512usize;
+    let end_byte = start_byte + 511usize;
+    let first = core::cmp::min(start_byte / record_bytes, OBJECT_CAPACITY - 1usize);
+    let last = core::cmp::min(end_byte / record_bytes, OBJECT_CAPACITY - 1usize);
+    Some((first, last))
+}
+
+unsafe fn log_metadata_write_fail(lba: u32) {
+    let mut live = 0u32;
+    let mut package_related = 0u32;
+    let mut set_related = 0u32;
+    let mut user_related = 0u32;
+    let mut driver_related = 0u32;
+    let mut other_related = 0u32;
+
+    let _ = device_write(b"[DATA] meta fail context\r\n");
+    let _ = device_write(b"[DATA] meta phase=");
+    let _ = device_write(meta_phase_label(unsafe { LAST_META_PHASE }));
+    let _ = device_write(b"\r\n");
+    let _ = device_write(b"[DATA] meta kind=");
+    let _ = device_write(mutation_kind_label(unsafe { LAST_MUTATION_KIND }));
+    let _ = device_write(b"\r\n");
+    let _ = device_write(b"[DATA] meta focus-type=");
+    let _ = device_write(object_type_label(unsafe { LAST_MUTATION_OBJECT_TYPE }));
+    let _ = device_write(b"\r\n");
+    device_write_hex(b"[DATA] meta lba=", lba as u64);
+    device_write_hex(b"[DATA] meta focus-index=", unsafe { LAST_MUTATION_INDEX as u64 });
+
+    let Some((first, last)) = metadata_object_record_bounds(lba) else {
+        return;
+    };
+
+    let mut index = first;
+    while index <= last {
+        let record = unsafe { *object_ptr(index) };
+        if record.live == 1 {
+            live = live.wrapping_add(1);
+            match record.object_type {
+                LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL | LUNA_DATA_OBJECT_TYPE_PACKAGE_INDEX => {
+                    package_related = package_related.wrapping_add(1);
+                }
+                OBJECT_TYPE_SET => {
+                    set_related = set_related.wrapping_add(1);
+                }
+                USER_NOTE_OBJECT_TYPE | USER_THEME_OBJECT_TYPE | USER_HOME_ROOT_OBJECT_TYPE |
+                USER_PROFILE_OBJECT_TYPE | USER_FILES_VIEW_OBJECT_TYPE => {
+                    user_related = user_related.wrapping_add(1);
+                }
+                LUNA_DATA_OBJECT_TYPE_DRIVER_BIND => {
+                    driver_related = driver_related.wrapping_add(1);
+                }
+                _ => {
+                    other_related = other_related.wrapping_add(1);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    device_write_hex(b"[DATA] meta record-first=", first as u64);
+    device_write_hex(b"[DATA] meta record-last=", last as u64);
+    device_write_hex(
+        b"[DATA] meta focus-in-range=",
+        if unsafe { LAST_MUTATION_INDEX as usize } >= first && unsafe { LAST_MUTATION_INDEX as usize } <= last { 1 } else { 0 }
+    );
+    device_write_hex(b"[DATA] meta live=", live as u64);
+    device_write_hex(b"[DATA] meta package=", package_related as u64);
+    device_write_hex(b"[DATA] meta set=", set_related as u64);
+    device_write_hex(b"[DATA] meta user=", user_related as u64);
+    device_write_hex(b"[DATA] meta driver=", driver_related as u64);
+    device_write_hex(b"[DATA] meta other=", other_related as u64);
 }
 
 unsafe fn ata_read_sector(lba: u32, out: *mut u8) -> bool {
@@ -634,7 +873,11 @@ unsafe fn save_bytes_to_disk(lba: u32, ptr: *const u8, len: usize) -> bool {
         unsafe {
             copy_nonoverlapping(ptr.add(offset), addr_of_mut!(SECTOR_BUFFER) as *mut u8, chunk);
         }
-        if !unsafe { ata_write_sector(lba + i as u32, addr_of!(SECTOR_BUFFER) as *const u8) } {
+        let sector_lba = lba + i as u32;
+        if !unsafe { ata_write_sector(sector_lba, addr_of!(SECTOR_BUFFER) as *const u8) } {
+            if metadata_object_record_bounds(sector_lba).is_some() {
+                unsafe { log_metadata_write_fail(sector_lba) };
+            }
             return false;
         }
         i += 1;
@@ -810,6 +1053,7 @@ unsafe fn commit_metadata(clean_state: u64) -> bool {
     unsafe {
         SUPERBLOCK.reserved[0] = clean_state;
         refresh_superblock_checksum();
+        LAST_META_PHASE = META_PHASE_COMMIT_CLEAN;
         save_metadata()
     }
 }
@@ -818,7 +1062,10 @@ unsafe fn rollback_seed_state(index: usize, previous_record: ObjectRecord, previ
     unsafe {
         object_ptr(index).write(previous_record);
         SUPERBLOCK.next_nonce = previous_nonce;
-        commit_metadata(STORE_STATE_CLEAN)
+        SUPERBLOCK.reserved[0] = STORE_STATE_CLEAN;
+        refresh_superblock_checksum();
+        LAST_META_PHASE = META_PHASE_ROLLBACK_RESTORE;
+        save_metadata()
     }
 }
 
@@ -837,6 +1084,7 @@ unsafe fn begin_mutation() -> bool {
         refresh_superblock_checksum();
         LAST_MUTATION_DEBUG = 0x5302;
         let _ = device_write(b"[DATA] mutation dirty set\r\n");
+        LAST_META_PHASE = META_PHASE_BEGIN_DIRTY;
         if save_metadata() {
             LAST_MUTATION_DEBUG = 0x5303;
             let _ = device_write(b"[DATA] mutation begin ok\r\n");
@@ -936,6 +1184,7 @@ unsafe fn replay_transaction() -> u64 {
 
 unsafe fn format_store() -> bool {
     unsafe {
+        set_mutation_context(MUTATION_KIND_FORMAT, 0, 0);
         SUPERBLOCK = EMPTY_SUPERBLOCK;
         SUPERBLOCK.magic = STORE_MAGIC;
         SUPERBLOCK.version = STORE_VERSION;
@@ -979,22 +1228,52 @@ unsafe fn format_store() -> bool {
     }
 }
 
+unsafe fn enter_install_readonly_empty() -> bool {
+    unsafe {
+        SUPERBLOCK = EMPTY_SUPERBLOCK;
+        OBJECTS = [EMPTY_RECORD; OBJECT_CAPACITY];
+    }
+    set_volume_runtime(VOLUME_HEALTHY, MODE_INSTALL);
+    true
+}
+
 unsafe fn load_store() -> bool {
     unsafe {
+        let installer_mode = installer_mode_active();
         let mut last_repair = LAST_REPAIR_NONE;
         let mut last_scrubbed = 0u64;
         let mut mount_state = VOLUME_HEALTHY;
         if !load_bytes_from_disk(store_base_lba(), addr_of_mut!(SUPERBLOCK) as *mut u8, size_of::<StoreSuperblock>()) {
             let _ = device_write(b"[DATA] load super fail\r\n");
+            if installer_mode {
+                let _ = device_write(b"[DATA] install-mode readonly\r\n");
+                return enter_install_readonly_empty();
+            }
             return false;
         }
         if SUPERBLOCK.magic != STORE_MAGIC || SUPERBLOCK.version != STORE_VERSION {
+            if installer_mode {
+                let _ = device_write(b"[DATA] install-mode readonly\r\n");
+                return enter_install_readonly_empty();
+            }
             let _ = device_write(b"[DATA] format store\r\n");
             return format_store();
         }
         if !load_bytes_from_disk(store_base_lba() + 1, addr_of_mut!(OBJECTS) as *mut u8, size_of::<[ObjectRecord; OBJECT_CAPACITY]>()) {
             let _ = device_write(b"[DATA] load meta fail\r\n");
+            if installer_mode {
+                let _ = device_write(b"[DATA] install-mode readonly\r\n");
+                return enter_install_readonly_empty();
+            }
             return false;
+        }
+        if installer_mode {
+            if !metadata_matches_layout() || SUPERBLOCK.reserved[0] == STORE_STATE_DIRTY {
+                let _ = device_write(b"[DATA] install-mode readonly\r\n");
+                return enter_install_readonly_empty();
+            }
+            set_volume_runtime(VOLUME_HEALTHY, MODE_INSTALL);
+            return true;
         }
         let replay_result = replay_transaction();
         if replay_result != LAST_REPAIR_NONE {
@@ -1781,6 +2060,7 @@ unsafe fn add_member(index: usize, member: ObjectRef) -> bool {
     unsafe {
         let previous_record = *object_ptr(index);
         let previous_nonce = SUPERBLOCK.next_nonce;
+        set_mutation_context(MUTATION_KIND_SET_ADD, OBJECT_TYPE_SET, index);
         let _ = device_write(b"[DATA] set add begin\r\n");
         device_write_hex(b"[DATA] set add index=", index as u64);
         device_write_hex(b"[DATA] set add size=", size as u64);
@@ -1855,6 +2135,7 @@ unsafe fn remove_member(index: usize, member: ObjectRef) -> bool {
     unsafe {
         let previous_record = *object_ptr(index);
         let previous_nonce = SUPERBLOCK.next_nonce;
+        set_mutation_context(MUTATION_KIND_SET_REMOVE, OBJECT_TYPE_SET, index);
         if !begin_mutation() {
             return false;
         }
@@ -1895,6 +2176,7 @@ unsafe fn seed_object(gate: &mut LunaDataGate) {
             unsafe {
                 let previous_record = *object_ptr(index);
                 let previous_nonce = SUPERBLOCK.next_nonce;
+                set_mutation_context(MUTATION_KIND_SEED, gate.object_type, index);
                 rebuild_slot_bitmap(None);
                 gate.result_count = 0x5102;
                 if !allocate_slot_list(1, addr_of_mut!(SLOT_LIST) as *mut u32) {
@@ -2012,6 +2294,7 @@ unsafe fn pour_span(gate: &mut LunaDataGate) {
             let _ = device_write(b"[DATA] pour seed begin\r\n");
             let previous_record = *object_ptr(index);
             let previous_nonce = SUPERBLOCK.next_nonce;
+            set_mutation_context(MUTATION_KIND_POUR_SEED, record.object_type, index);
             if !begin_mutation() {
                 let _ = device_write(b"[DATA] pour seed begin fail\r\n");
                 gate.status = STATUS_IO;
@@ -2047,6 +2330,7 @@ unsafe fn pour_span(gate: &mut LunaDataGate) {
         let previous_nonce = SUPERBLOCK.next_nonce;
 
         let _ = device_write(b"[DATA] pour txn begin\r\n");
+        set_mutation_context(MUTATION_KIND_POUR_TXN, record.object_type, index);
         if !begin_mutation() {
             let _ = device_write(b"[DATA] pour begin fail\r\n");
             gate.status = STATUS_IO;
@@ -2203,6 +2487,7 @@ unsafe fn shred_object(gate: &mut LunaDataGate) {
     }
     unsafe {
         let record = *object_ptr(index);
+        set_mutation_context(MUTATION_KIND_SHRED, record.object_type, index);
         if !begin_mutation() {
             gate.status = STATUS_IO;
             return;
@@ -2325,6 +2610,225 @@ unsafe fn set_remove_member_gate(gate: &mut LunaDataGate) {
     }
 }
 
+fn copy_fixed(dst: &mut [u8], src: &[u8]) {
+    let mut i = 0usize;
+    while i < dst.len() {
+        dst[i] = 0;
+        if i < src.len() {
+            dst[i] = src[i];
+        }
+        i += 1;
+    }
+}
+
+fn copy_name_for_type(dst: &mut [u8; 16], object_type: u32) {
+    match object_type {
+        USER_NOTE_OBJECT_TYPE => copy_fixed(dst, b"note"),
+        USER_THEME_OBJECT_TYPE => copy_fixed(dst, b"theme"),
+        USER_PROFILE_OBJECT_TYPE => copy_fixed(dst, b"profile"),
+        USER_HOME_ROOT_OBJECT_TYPE => copy_fixed(dst, b"home"),
+        _ => copy_fixed(dst, b"object"),
+    }
+}
+
+fn query_row_matches(row: &LunaQueryRow, request: &LunaQueryRequest) -> bool {
+    if (request.filter_flags & LUNA_QUERY_FILTER_NAMESPACE) != 0 && request.namespace_id != 0 && row.namespace_id != request.namespace_id {
+        return false;
+    }
+    if (request.filter_flags & LUNA_QUERY_FILTER_TYPE) != 0 && request.object_type != 0 && row.object_type != request.object_type {
+        return false;
+    }
+    if (request.filter_flags & LUNA_QUERY_FILTER_STATE) != 0 && request.state != QUERY_STATE_ANY && row.state != request.state {
+        return false;
+    }
+    if (request.filter_flags & LUNA_QUERY_FILTER_OWNER) != 0 &&
+        (request.owner_low != 0 || request.owner_high != 0) &&
+        (row.owner_low != request.owner_low || row.owner_high != request.owner_high) {
+        return false;
+    }
+    true
+}
+
+unsafe fn row_name_less(left: *const LunaQueryRow, right: *const LunaQueryRow) -> bool {
+    let mut i = 0usize;
+    while i < 16usize {
+        let l = (*left).name[i];
+        let r = (*right).name[i];
+        if l != r {
+            return l < r;
+        }
+        i += 1;
+    }
+    false
+}
+
+unsafe fn swap_query_rows(left: *mut LunaQueryRow, right: *mut LunaQueryRow) {
+    let tmp = *left;
+    *left = *right;
+    *right = tmp;
+}
+
+unsafe fn sort_query_rows(rows: *mut LunaQueryRow, count: usize, sort_mode: u32) {
+    if count < 2 {
+        return;
+    }
+    let mut i = 0usize;
+    while i < count {
+        let mut j = i + 1usize;
+        while j < count {
+            let swap = match sort_mode {
+                QUERY_SORT_NAME_ASC => row_name_less(rows.add(j), rows.add(i)),
+                QUERY_SORT_CREATED_DESC => (*rows.add(j)).created_at > (*rows.add(i)).created_at,
+                QUERY_SORT_UPDATED_DESC => (*rows.add(j)).updated_at > (*rows.add(i)).updated_at,
+                _ => false,
+            };
+            if swap {
+                swap_query_rows(rows.add(i), rows.add(j));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+}
+
+unsafe fn query_package_catalog(gate: &mut LunaDataGate, request: &LunaQueryRequest) {
+    let out = gate.buffer_addr as *mut LunaQueryRow;
+    let capacity = (gate.buffer_size as usize) / size_of::<LunaQueryRow>();
+    let limit = if request.limit == 0 { capacity } else { core::cmp::min(request.limit as usize, capacity) };
+    let mut written = 0usize;
+    let mut index = 0usize;
+    while index < OBJECT_CAPACITY && written < capacity {
+        let record = *object_ptr(index);
+        if record.live == 1 && record.object_type == LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL {
+            let mut install = PackageInstallRecord { magic: 0, version: 0, flags: 0, reserved0: 0, app_version: 0, app_object: ObjectRef { low: 0, high: 0 }, name: [0; 16] };
+            if read_object_range(index, 0, (&mut install as *mut PackageInstallRecord).cast::<u8>(), size_of::<PackageInstallRecord>()) &&
+               install.magic == PACKAGE_INSTALL_MAGIC &&
+               install.version == PACKAGE_INSTALL_VERSION {
+                let mut row = LunaQueryRow {
+                    object_low: record.object_low,
+                    object_high: record.object_high,
+                    owner_low: 0,
+                    owner_high: 0,
+                    created_at: record.created_at,
+                    updated_at: record.modified_at,
+                    version: install.app_version,
+                    namespace_id: QUERY_NAMESPACE_PACKAGE,
+                    object_type: record.object_type,
+                    state: QUERY_STATE_ACTIVE,
+                    flags: install.flags,
+                    name: [0; 16],
+                    label: [0; 16],
+                    message: [0; 32],
+                };
+                row.name = install.name;
+                row.label = install.name;
+                if query_row_matches(&row, request) {
+                    *out.add(written) = row;
+                    written += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    sort_query_rows(out, written, request.sort_mode);
+    gate.result_count = core::cmp::min(written, limit) as u32;
+    gate.status = STATUS_OK;
+}
+
+unsafe fn query_user_files(gate: &mut LunaDataGate, request: &LunaQueryRequest) {
+    let out = gate.buffer_addr as *mut LunaQueryRow;
+    let capacity = (gate.buffer_size as usize) / size_of::<LunaQueryRow>();
+    let limit = if request.limit == 0 { capacity } else { core::cmp::min(request.limit as usize, capacity) };
+    if request.scope_low == 0 || request.scope_high == 0 {
+        gate.status = STATUS_RANGE;
+        return;
+    }
+    let Some(set_index) = find_index(request.scope_low, request.scope_high) else {
+        gate.status = STATUS_NOT_FOUND;
+        return;
+    };
+    let mut refs = [ObjectRef { low: 0, high: 0 }; OBJECT_CAPACITY];
+    let Some(member_count) = list_members(set_index, refs.as_mut_ptr(), refs.len()) else {
+        gate.status = STATUS_METADATA;
+        return;
+    };
+    let mut written = 0usize;
+    let mut member = 0usize;
+    while member < member_count && written < capacity {
+        let Some(index) = find_index(refs[member].low, refs[member].high) else {
+            member += 1;
+            continue;
+        };
+        let record = *object_ptr(index);
+        let mut row = LunaQueryRow {
+            object_low: record.object_low,
+            object_high: record.object_high,
+            owner_low: request.owner_low,
+            owner_high: request.owner_high,
+            created_at: record.created_at,
+            updated_at: record.modified_at,
+            version: 0,
+            namespace_id: QUERY_NAMESPACE_USER,
+            object_type: record.object_type,
+            state: QUERY_STATE_ACTIVE,
+            flags: record.flags,
+            name: [0; 16],
+            label: [0; 16],
+            message: [0; 32],
+        };
+        copy_name_for_type(&mut row.name, record.object_type);
+        row.label = row.name;
+        if query_row_matches(&row, request) {
+            *out.add(written) = row;
+            written += 1;
+        }
+        member += 1;
+    }
+    sort_query_rows(out, written, request.sort_mode);
+    gate.result_count = core::cmp::min(written, limit) as u32;
+    gate.status = STATUS_OK;
+}
+
+unsafe fn query_objects(gate: &mut LunaDataGate) {
+    if gate.buffer_addr == 0 || gate.buffer_size < size_of::<LunaQueryRequest>() as u64 {
+        gate.status = STATUS_RANGE;
+        return;
+    }
+    let request = &mut *(gate.buffer_addr as *mut LunaQueryRequest);
+    let caller_space = if gate.writer_space != 0 {
+        gate.writer_space as u64
+    } else if request.target == QUERY_TARGET_USER_FILES {
+        SPACE_USER
+    } else {
+        0
+    };
+    if !validate_cap_for(CAP_DATA_QUERY, gate.cid_low, gate.cid_high, OP_QUERY, caller_space) {
+        gate.status = STATUS_INVALID_CAP;
+        return;
+    }
+    if !security_query_govern(caller_space, request) {
+        gate.status = STATUS_DENIED;
+        return;
+    }
+    gate.authority_space = SPACE_SECURITY;
+    gate.volume_state = unsafe { SUPERBLOCK.reserved[4] as u32 };
+    gate.volume_mode = unsafe { SUPERBLOCK.reserved[5] as u32 };
+    gate.buffer_addr = gate.buffer_addr + size_of::<LunaQueryRequest>() as u64;
+    gate.buffer_size = gate.buffer_size - size_of::<LunaQueryRequest>() as u64;
+    match request.target {
+        QUERY_TARGET_PACKAGE_CATALOG => unsafe { query_package_catalog(gate, request) },
+        QUERY_TARGET_USER_FILES => unsafe { query_user_files(gate, request) },
+        _ => gate.status = STATUS_RANGE,
+    }
+    if gate.status == STATUS_OK && (request.result_flags & QUERY_FLAG_AUDIT_REQUIRED) != 0 {
+        match request.target {
+            QUERY_TARGET_PACKAGE_CATALOG => { let _ = observe_log(b"audit lasql.query package"); }
+            QUERY_TARGET_USER_FILES => { let _ = observe_log(b"audit lasql.query files"); }
+            _ => {}
+        }
+    }
+}
+
 unsafe fn stat_store(gate: &mut LunaDataGate) {
     if !validate_cap(CAP_DATA_GATHER, gate.cid_low, gate.cid_high, OP_STAT) {
         gate.status = STATUS_INVALID_CAP;
@@ -2407,6 +2911,7 @@ unsafe fn verify_store(gate: &mut LunaDataGate) {
 pub extern "sysv64" fn data_entry_boot(_bootview: *const u8) {
     let read_ok = request_cap(CAP_DEVICE_READ, unsafe { &mut DEVICE_READ_LOW }, unsafe { &mut DEVICE_READ_HIGH });
     let write_ok = request_cap(CAP_DEVICE_WRITE, unsafe { &mut DEVICE_WRITE_LOW }, unsafe { &mut DEVICE_WRITE_HIGH });
+    let _ = request_cap(CAP_OBSERVE_LOG, unsafe { &mut OBSERVE_LOG_LOW }, unsafe { &mut OBSERVE_LOG_HIGH });
     let ok = read_ok && write_ok && unsafe { load_store() };
     if ok {
         let _ = device_write(b"[DATA] lafs disk online\r\n");
@@ -2437,6 +2942,7 @@ pub extern "sysv64" fn data_entry_gate(gate: *mut LunaDataGate) {
         OP_VERIFY => unsafe { verify_store(gate) },
         OP_SET_ADD => unsafe { set_add_member_gate(gate) },
         OP_SET_REMOVE => unsafe { set_remove_member_gate(gate) },
+        OP_QUERY => unsafe { query_objects(gate) },
         _ => gate.status = STATUS_METADATA,
     }
 }
@@ -2449,6 +2955,21 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
             write_volatile(dest.add(index), read_volatile(src.add(index)));
         }
         index += 1;
+    }
+    dest
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+    if (dest as usize) <= (src as usize) {
+        return unsafe { memcpy(dest, src, len) };
+    }
+    let mut index = len;
+    while index != 0 {
+        index -= 1;
+        unsafe {
+            write_volatile(dest.add(index), read_volatile(src.add(index)));
+        }
     }
     dest
 }

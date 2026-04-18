@@ -166,6 +166,7 @@ def generate_layout_constants(layout: dict) -> None:
                 "#ifndef LUNA_LAYOUT_H",
                 "#define LUNA_LAYOUT_H",
                 "",
+                f"#define LUNA_IMAGE_BASE 0x{layout['IMAGE_BASE']:X}ull",
                 f"#define LUNA_MANIFEST_ADDR 0x{layout['MANIFEST']:X}ull",
                 f"#define LUNA_BOOTVIEW_ADDR 0x{layout['BOOTVIEW']:X}ull",
                 "",
@@ -178,6 +179,7 @@ def generate_layout_constants(layout: dict) -> None:
     (ROOT / "include" / "luna_layout.rs").write_text(
         "\n".join(
             [
+                f"pub const LUNA_IMAGE_BASE: u64 = 0x{layout['IMAGE_BASE']:X};",
                 f"pub const LUNA_MANIFEST_ADDR: u64 = 0x{layout['MANIFEST']:X};",
                 f"pub const LUNA_BOOTVIEW_ADDR: u64 = 0x{layout['BOOTVIEW']:X};",
                 "",
@@ -185,6 +187,72 @@ def generate_layout_constants(layout: dict) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def write_if_changed(path: Path, text: str) -> bool:
+    current = path.read_text(encoding="utf-8") if path.exists() else None
+    if current == text:
+        return False
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def sync_installer_efi_payload(payload: bytes) -> bool:
+    rs_path = ROOT / "include" / "luna_installer_efi_payload.rs"
+    h_path = ROOT / "include" / "luna_installer_efi_payload.h"
+
+    rs_lines = [
+        f"pub const LUNA_INSTALLER_EFI_PAYLOAD_BYTES: usize = {len(payload)};",
+        "pub static LUNA_INSTALLER_EFI_PAYLOAD: [u8; LUNA_INSTALLER_EFI_PAYLOAD_BYTES] = [",
+    ]
+    for offset in range(0, len(payload), 12):
+        chunk = ", ".join(f"0x{byte:02X}u8" for byte in payload[offset:offset + 12])
+        rs_lines.append(f"    {chunk},")
+    rs_lines.extend([
+        "];",
+        "",
+    ])
+
+    h_lines = [
+        "#ifndef LUNA_INSTALLER_EFI_PAYLOAD_H",
+        "#define LUNA_INSTALLER_EFI_PAYLOAD_H",
+        "",
+        "#include <stdint.h>",
+        "",
+        f"#define LUNA_INSTALLER_EFI_PAYLOAD_BYTES {len(payload)}u",
+        "static const uint8_t g_luna_installer_efi_payload[LUNA_INSTALLER_EFI_PAYLOAD_BYTES] = {",
+    ]
+    for offset in range(0, len(payload), 12):
+        chunk = ", ".join(f"0x{byte:02X}u" for byte in payload[offset:offset + 12])
+        h_lines.append(f"    {chunk},")
+    h_lines.extend([
+        "};",
+        "",
+        "#endif",
+        "",
+    ])
+
+    rs_changed = write_if_changed(rs_path, "\n".join(rs_lines))
+    h_changed = write_if_changed(h_path, "\n".join(h_lines))
+    return rs_changed or h_changed
+
+
+def sync_installer_runtime_reset(layout: dict, labels: dict[str, dict[str, int]]) -> bool:
+    rs_path = ROOT / "include" / "luna_installer_runtime_reset.rs"
+    mappings = [
+        ("LUNA_INSTALLER_DEVICE_FIRMWARE_READ_DIAG", "DEVICE", "g_firmware_read_diag_once.1", 1),
+        ("LUNA_INSTALLER_DEVICE_AHCI_ABAR", "DEVICE", "g_ahci_abar", 8),
+        ("LUNA_INSTALLER_DEVICE_AHCI_PORT", "DEVICE", "g_ahci_port", 1),
+        ("LUNA_INSTALLER_DEVICE_AHCI_READY", "DEVICE", "g_ahci_ready", 1),
+    ]
+    rs_lines: list[str] = []
+    for const_name, space, symbol, size in mappings:
+        symbol_addr = labels[space][symbol]
+        offset = symbol_addr - layout["IMAGE_BASE"]
+        rs_lines.append(f"pub const {const_name}_OFFSET: usize = 0x{offset:X};")
+        rs_lines.append(f"pub const {const_name}_SIZE: usize = {size};")
+    rs_lines.append("")
+    return write_if_changed(rs_path, "\n".join(rs_lines))
 
 
 def fold_bytes(seed: int, blob: bytes) -> int:
@@ -587,6 +655,18 @@ def build_bootsector(lunaloader_sectors: int, tools: dict[str, str], env: dict[s
     return out.read_bytes()
 
 
+def normalize_pe_image(blob: bytes) -> bytes:
+    data = bytearray(blob)
+    if len(data) < 0x40:
+        return bytes(data)
+    pe_offset = read_u32(data, 0x3C)
+    if pe_offset + 0x58 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\x00\x00":
+        return bytes(data)
+    struct.pack_into("<I", data, pe_offset + 8, 0)
+    struct.pack_into("<I", data, pe_offset + 88, 0)
+    return bytes(data)
+
+
 def guid_bytes(text: str) -> bytes:
     return uuid.UUID(text).bytes_le
 
@@ -679,8 +759,10 @@ def build_uefi_stub(
     if not out.exists():
         raise RuntimeError(f"UEFI loader build did not produce {out}")
     target = OBJ_DIR / "BOOTX64-stripped.EFI"
-    target.write_bytes(out.read_bytes())
-    return target.read_bytes()
+    normalized = normalize_pe_image(out.read_bytes())
+    out.write_bytes(normalized)
+    target.write_bytes(normalized)
+    return normalized
 
 
 def fat_date_time() -> tuple[int, int]:
@@ -1179,6 +1261,137 @@ def build_gpt_disk(esp_blob: bytes, system_blob: bytes, data_blob: bytes) -> byt
     return bytes(disk)
 
 
+def compose_stage_bundle(
+    layout: dict,
+    tools: dict[str, str],
+    env: dict[str, str],
+    labels: dict[str, dict],
+    blobs: dict[str, bytes],
+    app_blobs: dict[str, bytes],
+    app_sizes: dict[str, int],
+) -> dict[str, object]:
+    manifest_blob = build_manifest(layout, labels, app_sizes)
+    manifest_offsets = manifest_field_offsets(layout, labels, app_sizes)
+    check_stage_layout(layout, blobs, app_blobs, manifest_blob)
+
+    stage_base = layout["IMAGE_BASE"]
+    stage = bytearray()
+    for name in ["BOOT", "SECURITY", "DATA", "LIFECYCLE", "SYSTEM", "PROGRAM", "TIME", "DEVICE", "OBSERVE", "NETWORK", "GRAPHICS", "PACKAGE", "UPDATE", "AI", "USER", "DIAG"]:
+        place(stage, stage_base, layout["SPACE"][name], blobs[name])
+    for key in ["GUARD", "HELLO", "FILES", "NOTES", "CONSOLE"]:
+        place(stage, stage_base, layout["APP"][key], app_blobs[key])
+    place(stage, stage_base, layout["SCRIPT"]["SESSION"]["base"], b"\x00" * layout["SCRIPT"]["SESSION"]["size"])
+    place(stage, stage_base, layout["MANIFEST"], manifest_blob)
+
+    stage_sectors = (len(stage) + 511) // 512
+    stage.extend(b"\x00" * (stage_sectors * 512 - len(stage)))
+    stage_blob = bytes(stage)
+
+    bios_boot_entry_offset = labels["BOOT"]["boot_stage_entry"] - layout["SPACE"]["BOOT"]
+    stage_pd_entry_count = max(512, (layout["IMAGE_BASE"] + len(stage_blob) + 0x1FFFFF) // 0x200000)
+    lunaloader_blob = build_lunaloader(
+        stage_lba=2,
+        stage_sectors=stage_sectors,
+        stage_load_addr=layout["IMAGE_BASE"],
+        stage_entry_offset=bios_boot_entry_offset,
+        stage_pd_entry_count=stage_pd_entry_count,
+        tools=tools,
+        env=env,
+    )
+    lunaloader_sectors = (len(lunaloader_blob) + 511) // 512
+    lunaloader_blob = build_lunaloader(
+        stage_lba=1 + lunaloader_sectors,
+        stage_sectors=stage_sectors,
+        stage_load_addr=layout["IMAGE_BASE"],
+        stage_entry_offset=bios_boot_entry_offset,
+        stage_pd_entry_count=stage_pd_entry_count,
+        tools=tools,
+        env=env,
+    )
+    lunaloader_sectors = (len(lunaloader_blob) + 511) // 512
+    lunaloader_blob = lunaloader_blob.ljust(lunaloader_sectors * 512, b"\x00")
+
+    system_store_blob = build_native_store_blob(
+        SYSTEM_STORE_LBA,
+        SYSTEM_SECTORS,
+        LUNA_NATIVE_PROFILE_SYSTEM,
+        DATA_STORE_LBA,
+        LUNA_ACTIVATION_ACTIVE,
+    )
+    data_store_blob = build_native_store_blob(
+        DATA_STORE_LBA,
+        DATA_SECTORS,
+        LUNA_NATIVE_PROFILE_DATA,
+        SYSTEM_STORE_LBA,
+        LUNA_ACTIVATION_PROVISIONED,
+    )
+
+    image = bytearray(build_bootsector(lunaloader_sectors, tools, env) + lunaloader_blob + stage_blob)
+    minimum_size = (DATA_STORE_LBA + DATA_SECTORS) * 512
+    if len(image) < minimum_size:
+        image.extend(b"\x00" * (minimum_size - len(image)))
+    system_offset = SYSTEM_STORE_LBA * DISK_SECTOR_SIZE
+    data_offset = DATA_STORE_LBA * DISK_SECTOR_SIZE
+    image[system_offset:system_offset + len(system_store_blob)] = system_store_blob
+    image[data_offset:data_offset + len(data_store_blob)] = data_store_blob
+
+    boot_entry_offset = labels["BOOT"]["boot_uefi_entry"] - layout["SPACE"]["BOOT"]
+    stage_relative_lba = ESP_DATA_START_LBA + (ESP_STAGE_FILE_CLUSTER - 2) * ESP_SECTORS_PER_CLUSTER
+    scratch_orig_base = layout["BOOTVIEW"]
+    scratch_end = max(
+        layout["BOOTVIEW"] + 0x1000,
+        *(gate["base"] + gate["size"] for gate in layout["GATE"].values()),
+        *(buf["base"] + buf["size"] for buf in layout["BUFFER"].values()),
+    )
+    scratch_pages = (scratch_end - scratch_orig_base + 0xFFF) // 0x1000
+    scratch_field_offsets = [
+        manifest_offsets["bootview_base"],
+        manifest_offsets["security_gate_base"],
+        manifest_offsets["data_gate_base"],
+        manifest_offsets["lifecycle_gate_base"],
+        manifest_offsets["system_gate_base"],
+        manifest_offsets["time_gate_base"],
+        manifest_offsets["device_gate_base"],
+        manifest_offsets["observe_gate_base"],
+        manifest_offsets["network_gate_base"],
+        manifest_offsets["graphics_gate_base"],
+        manifest_offsets["ai_gate_base"],
+        manifest_offsets["package_gate_base"],
+        manifest_offsets["update_gate_base"],
+        manifest_offsets["program_gate_base"],
+        manifest_offsets["data_buffer_base"],
+        manifest_offsets["list_buffer_base"],
+    ]
+    uefi_blob = build_uefi_stub(
+        stage_relative_lba,
+        len(stage_blob),
+        layout["IMAGE_BASE"],
+        boot_entry_offset,
+        layout["MANIFEST"],
+        scratch_orig_base,
+        scratch_pages,
+        scratch_field_offsets,
+        tools,
+        env,
+    )
+    esp_blob = build_fat16_esp(uefi_blob, stage_blob)
+    gpt_disk = build_gpt_disk(esp_blob, system_store_blob, data_store_blob)
+
+    return {
+        "manifest_blob": manifest_blob,
+        "manifest_offsets": manifest_offsets,
+        "stage_blob": stage_blob,
+        "stage_sectors": stage_sectors,
+        "lunaloader_blob": lunaloader_blob,
+        "system_store_blob": system_store_blob,
+        "data_store_blob": data_store_blob,
+        "image": bytes(image),
+        "uefi_blob": uefi_blob,
+        "esp_blob": esp_blob,
+        "gpt_disk": gpt_disk,
+    }
+
+
 def main() -> None:
     BUILD_DIR.mkdir(exist_ok=True)
     OBJ_DIR.mkdir(exist_ok=True)
@@ -1264,119 +1477,43 @@ def main() -> None:
         )
         labels[f"APP.{key}"] = app_labels
         (APP_OUT_DIR / f"{app_name}.la").write_bytes(app_blob_raw)
-        entry_offset = struct.calcsize("<IIQII16s4Q") + (app_labels[entry_name] - layout["APP"][key])
+        entry_offset = app_labels[entry_name] - layout["APP"][key]
         app_blob = pack_luna_app(app_name, app_blob_raw, entry_offset, [])
         app_blobs[key] = app_blob
         app_sizes[key] = len(app_blob)
         (APP_OUT_DIR / f"{app_name}.luna").write_bytes(app_blob)
 
-    manifest_blob = build_manifest(layout, labels, app_sizes)
-    manifest_offsets = manifest_field_offsets(layout, labels, app_sizes)
-    check_stage_layout(layout, blobs, app_blobs, manifest_blob)
+    bundle: dict[str, object] | None = None
+    for _ in range(3):
+        bundle = compose_stage_bundle(layout, tools, env, labels, blobs, app_blobs, app_sizes)
+        payload_changed = sync_installer_efi_payload(bundle["uefi_blob"])  # type: ignore[index]
+        reset_changed = sync_installer_runtime_reset(layout, labels)
+        if not payload_changed and not reset_changed:
+            break
+        blobs["SYSTEM"], labels["SYSTEM"] = build_rust_space(
+            ROOT / "system" / "src" / "main.rs",
+            ROOT / "system" / "system.ld",
+            "luna_system",
+            "system_main.o",
+            "system_stage.exe",
+            "system.bin",
+            layout["SPACE"]["SYSTEM"],
+            tools,
+            env,
+        )
+    else:
+        raise RuntimeError("installer EFI payload did not converge")
 
-    stage_base = layout["IMAGE_BASE"]
-    stage = bytearray()
-    for name in ["BOOT", "SECURITY", "DATA", "LIFECYCLE", "SYSTEM", "PROGRAM", "TIME", "DEVICE", "OBSERVE", "NETWORK", "GRAPHICS", "PACKAGE", "UPDATE", "AI", "USER", "DIAG"]:
-        place(stage, stage_base, layout["SPACE"][name], blobs[name])
-    for key in ["GUARD", "HELLO", "FILES", "NOTES", "CONSOLE"]:
-        place(stage, stage_base, layout["APP"][key], app_blobs[key])
-    place(stage, stage_base, layout["SCRIPT"]["SESSION"]["base"], b"\x00" * layout["SCRIPT"]["SESSION"]["size"])
-    place(stage, stage_base, layout["MANIFEST"], manifest_blob)
-
-    stage_sectors = (len(stage) + 511) // 512
-    stage.extend(b"\x00" * (stage_sectors * 512 - len(stage)))
-    stage_blob = bytes(stage)
-
-    bios_boot_entry_offset = labels["BOOT"]["boot_stage_entry"] - layout["SPACE"]["BOOT"]
-    stage_pd_entry_count = max(512, (layout["IMAGE_BASE"] + len(stage_blob) + 0x1FFFFF) // 0x200000)
-    lunaloader_blob = build_lunaloader(
-        stage_lba=2,
-        stage_sectors=stage_sectors,
-        stage_load_addr=layout["IMAGE_BASE"],
-        stage_entry_offset=bios_boot_entry_offset,
-        stage_pd_entry_count=stage_pd_entry_count,
-        tools=tools,
-        env=env,
-    )
-    lunaloader_sectors = (len(lunaloader_blob) + 511) // 512
-    lunaloader_blob = build_lunaloader(
-        stage_lba=1 + lunaloader_sectors,
-        stage_sectors=stage_sectors,
-        stage_load_addr=layout["IMAGE_BASE"],
-        stage_entry_offset=bios_boot_entry_offset,
-        stage_pd_entry_count=stage_pd_entry_count,
-        tools=tools,
-        env=env,
-    )
-    lunaloader_sectors = (len(lunaloader_blob) + 511) // 512
-    lunaloader_blob = lunaloader_blob.ljust(lunaloader_sectors * 512, b"\x00")
-
-    system_store_blob = build_native_store_blob(
-        SYSTEM_STORE_LBA,
-        SYSTEM_SECTORS,
-        LUNA_NATIVE_PROFILE_SYSTEM,
-        DATA_STORE_LBA,
-        LUNA_ACTIVATION_ACTIVE,
-    )
-    data_store_blob = build_native_store_blob(
-        DATA_STORE_LBA,
-        DATA_SECTORS,
-        LUNA_NATIVE_PROFILE_DATA,
-        SYSTEM_STORE_LBA,
-        LUNA_ACTIVATION_PROVISIONED,
-    )
-
-    image = bytearray(build_bootsector(lunaloader_sectors, tools, env) + lunaloader_blob + stage_blob)
-    minimum_size = (DATA_STORE_LBA + DATA_SECTORS) * 512
-    if len(image) < minimum_size:
-        image.extend(b"\x00" * (minimum_size - len(image)))
-    system_offset = SYSTEM_STORE_LBA * DISK_SECTOR_SIZE
-    data_offset = DATA_STORE_LBA * DISK_SECTOR_SIZE
-    image[system_offset:system_offset + len(system_store_blob)] = system_store_blob
-    image[data_offset:data_offset + len(data_store_blob)] = data_store_blob
-    (BUILD_DIR / "lunaos.img").write_bytes(bytes(image))
-
-    boot_entry_offset = labels["BOOT"]["boot_uefi_entry"] - layout["SPACE"]["BOOT"]
-    stage_relative_lba = ESP_DATA_START_LBA + (ESP_STAGE_FILE_CLUSTER - 2) * ESP_SECTORS_PER_CLUSTER
-    scratch_orig_base = layout["BOOTVIEW"]
-    scratch_end = max(
-        layout["BOOTVIEW"] + 0x1000,
-        *(gate["base"] + gate["size"] for gate in layout["GATE"].values()),
-        *(buf["base"] + buf["size"] for buf in layout["BUFFER"].values()),
-    )
-    scratch_pages = (scratch_end - scratch_orig_base + 0xFFF) // 0x1000
-    scratch_field_offsets = [
-        manifest_offsets["bootview_base"],
-        manifest_offsets["security_gate_base"],
-        manifest_offsets["data_gate_base"],
-        manifest_offsets["lifecycle_gate_base"],
-        manifest_offsets["system_gate_base"],
-        manifest_offsets["time_gate_base"],
-        manifest_offsets["device_gate_base"],
-        manifest_offsets["observe_gate_base"],
-        manifest_offsets["network_gate_base"],
-        manifest_offsets["graphics_gate_base"],
-        manifest_offsets["ai_gate_base"],
-        manifest_offsets["package_gate_base"],
-        manifest_offsets["update_gate_base"],
-        manifest_offsets["program_gate_base"],
-        manifest_offsets["data_buffer_base"],
-        manifest_offsets["list_buffer_base"],
-    ]
-    uefi_blob = build_uefi_stub(
-        stage_relative_lba,
-        len(stage_blob),
-        layout["IMAGE_BASE"],
-        boot_entry_offset,
-        layout["MANIFEST"],
-        scratch_orig_base,
-        scratch_pages,
-        scratch_field_offsets,
-        tools,
-        env,
-    )
-    esp_blob = build_fat16_esp(uefi_blob, stage_blob)
-    gpt_disk = build_gpt_disk(esp_blob, system_store_blob, data_store_blob)
+    assert bundle is not None
+    manifest_blob = bundle["manifest_blob"]
+    stage_blob = bundle["stage_blob"]
+    stage_sectors = bundle["stage_sectors"]
+    system_store_blob = bundle["system_store_blob"]
+    data_store_blob = bundle["data_store_blob"]
+    uefi_blob = bundle["uefi_blob"]
+    esp_blob = bundle["esp_blob"]
+    gpt_disk = bundle["gpt_disk"]
+    (BUILD_DIR / "lunaos.img").write_bytes(bundle["image"])
     efi_dir = BUILD_DIR / "EFI" / "BOOT"
     efi_dir.mkdir(parents=True, exist_ok=True)
     (efi_dir / "BOOTX64.EFI").write_bytes(uefi_blob)

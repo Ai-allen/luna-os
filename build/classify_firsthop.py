@@ -1,0 +1,331 @@
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+
+def strip_ansi(text: str) -> str:
+    return re.sub(r"\x1B\[[0-9;?=]*[ -/]*[@-~]", "", text)
+
+
+def read_lines(log_path: Path) -> list[str]:
+    text = strip_ansi(log_path.read_text(encoding="utf-8", errors="replace"))
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def first_match(lines: list[str], prefix: str) -> str | None:
+    for line in lines:
+        if prefix in line:
+            return line
+    return None
+
+
+def detect_firmware(lines: list[str]) -> str:
+    if first_match(lines, "LunaLoader UEFI Stage 1 handoff") or first_match(lines, "BdsDxe:"):
+        return "uefi"
+    if first_match(lines, "[LunaLoader] Stage 1 online"):
+        return "legacy"
+    return "unknown"
+
+
+def parse_driver(line: str | None, key: str) -> str:
+    if not line:
+        return "missing"
+    match = re.search(rf"{re.escape(key)}=([^ ]+)", line)
+    if not match:
+        return "unknown"
+    return match.group(1)
+
+
+def build_profile(*parts: tuple[str, str]) -> str:
+    return ",".join(f"{key}={value}" for key, value in parts)
+
+
+def parse_lane(lines: list[str], storage_line: str | None, display_line: str | None, input_line: str | None, net_line: str | None) -> tuple[str, str, str, str]:
+    storage_lane = "missing"
+    if storage_line:
+        storage_lane = "ready"
+    if first_match(lines, "[BOOT] lsys read fail") or first_match(lines, "[AHCI] ") or first_match(lines, "[ATA] ") or first_match(lines, "[DISK] "):
+        storage_lane = "degraded"
+
+    display_lane = "missing"
+    if display_line:
+        fb_state = parse_driver(display_line, "fb")
+        if fb_state == "ready":
+            display_lane = "framebuffer"
+        elif fb_state == "missing":
+            display_lane = "text-console"
+        else:
+            display_lane = fb_state
+
+    input_lane = "missing"
+    if input_line:
+        if "lane=ready" in input_line:
+            input_lane = "ready"
+        else:
+            input_lane = "present"
+
+    net_lane = "missing"
+    if net_line:
+        if "lane=ready" in net_line:
+            net_lane = "ready"
+        else:
+            net_lane = "present"
+
+    return storage_lane, display_lane, input_lane, net_lane
+
+
+def detect_fwblk(lines: list[str]) -> str:
+    if first_match(lines, "[BOOT] fwblk handoff ok"):
+        return "ready"
+    if first_match(lines, "[FWBLK] handoff missing"):
+        if first_match(lines, "[BOOT] lsys super read ok"):
+            return "legacy-missing-ok"
+        return "missing-blocking"
+    return "unknown"
+
+
+def detect_progress(lines: list[str]) -> str:
+    if first_match(lines, "[DESKTOP] status") or first_match(lines, "[DESKTOP] boot ok"):
+        if first_match(lines, "first-setup required"):
+            return "desktop-first-setup"
+        if first_match(lines, "[USER] shell ready"):
+            return "desktop-shell-ready"
+        return "desktop"
+    if first_match(lines, "[USER] shell ready"):
+        if first_match(lines, "first-setup required"):
+            return "shell-ready-first-setup"
+        return "shell-ready"
+    if first_match(lines, "[DEVICE] lane ready"):
+        return "device-lane-ready"
+    if first_match(lines, "[BOOT] dawn online"):
+        return "boot-entered"
+    return "unknown"
+
+
+def detect_split_layer(lines: list[str]) -> tuple[str, str]:
+    ordered = (
+        ("handoff", "[FWBLK] handoff missing"),
+        ("storage", "[BOOT] lsys read fail"),
+        ("storage", "[AHCI] "),
+        ("storage", "[ATA] "),
+        ("storage", "[DISK] "),
+        ("driver-governance", "driver.bind denied"),
+        ("driver-governance", "allow_device_call denied"),
+        ("display", "[GRAPHICS] framebuffer fail"),
+        ("display", "[DEVICE] display path"),
+        ("input", "[VIRTKBD] pci missing"),
+        ("input", "[DEVICE] input path"),
+    )
+    input_ready = False
+    input_line = first_match(lines, "[DEVICE] input path")
+    input_ctrl = first_match(lines, "[DEVICE] input ctrl ")
+    if input_line and "lane=ready" in input_line:
+        input_ready = True
+    if input_ctrl and "legacy=i8042" in input_ctrl:
+        input_ready = True
+    for layer, marker in ordered:
+        line = first_match(lines, marker)
+        if not line:
+            continue
+        if layer == "handoff" and first_match(lines, "[BOOT] lsys super read ok"):
+            continue
+        if layer == "display" and first_match(lines, "[USER] shell ready"):
+            continue
+        if marker == "[VIRTKBD] pci missing" and input_ready:
+            continue
+        if layer == "input" and line.startswith("[DEVICE] input path") and "lane=ready" in line:
+            continue
+        return layer, line
+    return "none", "(none)"
+
+
+def detect_governance(lines: list[str]) -> str:
+    for line in lines:
+        if "driver.bind denied" in line or "allow_device_call denied" in line:
+            return line
+    return "(none)"
+
+
+def detect_residual(lines: list[str]) -> str:
+    for line in lines:
+        if line.startswith("[DISK] ") or line.startswith("[AHCI] ") or line.startswith("[ATA] "):
+            return line
+    return "(none)"
+
+
+def parse_layout_start(line: str | None, key: str) -> int | None:
+    if not line:
+        return None
+    match = re.search(rf"{re.escape(key)}=([0-9A-Fa-f]+)", line)
+    if not match:
+        return None
+    return int(match.group(1), 16)
+
+
+def parse_residual_lba(line: str) -> int | None:
+    match = re.search(r"lba=([0-9A-Fa-f]+)", line)
+    if not match:
+        return None
+    return int(match.group(1), 16)
+
+
+def classify_residual_region(layout_line: str | None, residual_line: str) -> str:
+    if residual_line == "(none)":
+        return "(none)"
+    residual_lba = parse_residual_lba(residual_line)
+    if residual_lba is None:
+        return "unknown"
+    lsys_lba = parse_layout_start(layout_line, "lsys")
+    ldat_lba = parse_layout_start(layout_line, "ldat")
+    if lsys_lba is not None and residual_lba >= lsys_lba:
+        if ldat_lba is None or residual_lba < ldat_lba:
+            return f"lsys+0x{residual_lba - lsys_lba:04X}"
+    if ldat_lba is not None and residual_lba >= ldat_lba:
+        return f"ldat+0x{residual_lba - ldat_lba:04X}"
+    return f"lba=0x{residual_lba:08X}"
+
+
+def classify(log_path: Path) -> dict[str, str]:
+    lines = read_lines(log_path)
+    firmware = detect_firmware(lines)
+    fwblk = detect_fwblk(lines)
+    progress = detect_progress(lines)
+
+    storage_line = first_match(lines, "[DEVICE] disk path")
+    storage_select_line = first_match(lines, "[DEVICE] disk select ")
+    layout_line = first_match(lines, "[DEVICE] disk layout ")
+    storage_pci = first_match(lines, "[DEVICE] disk pci ")
+    display_line = first_match(lines, "[DEVICE] display path")
+    display_select_line = first_match(lines, "[DEVICE] display select ")
+    display_pci = first_match(lines, "[DEVICE] display pci ")
+    input_line = first_match(lines, "[DEVICE] input path")
+    input_select_line = first_match(lines, "[DEVICE] input select ")
+    input_pci = first_match(lines, "[DEVICE] input pci ")
+    input_ctrl = first_match(lines, "[DEVICE] input ctrl ")
+    serial_line = first_match(lines, "[DEVICE] serial path")
+    serial_select_line = first_match(lines, "[DEVICE] serial select ")
+    serial_pci = first_match(lines, "[DEVICE] serial pci ")
+    net_line = first_match(lines, "[DEVICE] net path")
+    net_select_line = first_match(lines, "[DEVICE] net select ")
+    net_pci = first_match(lines, "[DEVICE] net pci ")
+    platform_pci = first_match(lines, "[DEVICE] platform pci ")
+
+    storage_lane, display_lane, input_lane, net_lane = parse_lane(
+        lines, storage_line, display_line, input_line, net_line
+    )
+    split_layer, split_evidence = detect_split_layer(lines)
+    residual = detect_residual(lines)
+    lsys_start = parse_layout_start(layout_line, "lsys")
+    ldat_start = parse_layout_start(layout_line, "ldat")
+    residual_region = classify_residual_region(layout_line, residual)
+    governance = detect_governance(lines)
+
+    lsys_status = "ok" if first_match(lines, "[BOOT] lsys super read ok") else "fail" if first_match(lines, "[BOOT] lsys read fail") else "unknown"
+    native_pair = "ok" if first_match(lines, "[BOOT] native pair ok") else "missing"
+
+    driver_profile = (
+        build_profile(
+            ("storage", parse_driver(storage_line, "driver")),
+            ("serial", parse_driver(serial_line, "driver")),
+            ("display", parse_driver(display_line, "driver")),
+            ("input", parse_driver(input_line, "kbd")),
+            ("net", parse_driver(net_line, "driver")),
+        )
+    )
+    selection_profile = (
+        build_profile(
+            ("storage", parse_driver(storage_select_line, "basis")),
+            ("serial", parse_driver(serial_select_line, "basis")),
+            ("display", parse_driver(display_select_line, "basis")),
+            ("input", parse_driver(input_select_line, "basis")),
+            ("net", parse_driver(net_select_line, "basis")),
+        )
+    )
+
+    return {
+        "log": str(log_path),
+        "firmware": firmware,
+        "driver_profile": driver_profile,
+        "selection_profile": selection_profile,
+        "layout_lsys": f"0x{lsys_start:08X}" if lsys_start is not None else "(missing)",
+        "layout_ldat": f"0x{ldat_start:08X}" if ldat_start is not None else "(missing)",
+        "storage_pci": storage_pci or "(missing)",
+        "serial_pci": serial_pci or "(missing)",
+        "display_pci": display_pci or "(missing)",
+        "input_identity": input_pci or input_ctrl or "(missing)",
+        "net_pci": net_pci or "(missing)",
+        "platform_pci": platform_pci or "(missing)",
+        "fwblk": fwblk,
+        "lsys": lsys_status,
+        "native_pair": native_pair,
+        "storage_lane": storage_lane,
+        "display_lane": display_lane,
+        "input_lane": input_lane,
+        "net_lane": net_lane,
+        "progress": progress,
+        "split_layer": split_layer,
+        "split_evidence": split_evidence,
+        "storage_residual": residual,
+        "storage_residual_region": residual_region,
+        "driver_governance": governance,
+    }
+
+
+def summarize(log_path: Path) -> str:
+    info = classify(log_path)
+    out = [
+        f"log: {info['log']}",
+        "",
+        "[identity]",
+        f"firmware={info['firmware']}",
+        f"driver_profile={info['driver_profile']}",
+        f"selection_profile={info['selection_profile']}",
+        f"layout_lsys={info['layout_lsys']}",
+        f"layout_ldat={info['layout_ldat']}",
+        f"storage_pci={info['storage_pci']}",
+        f"serial_pci={info['serial_pci']}",
+        f"display_pci={info['display_pci']}",
+        f"input_identity={info['input_identity']}",
+        f"net_pci={info['net_pci']}",
+        f"platform_pci={info['platform_pci']}",
+        "",
+        "[contracts]",
+        f"fwblk={info['fwblk']}",
+        f"lsys={info['lsys']}",
+        f"native_pair={info['native_pair']}",
+        f"storage_lane={info['storage_lane']}",
+        f"display_lane={info['display_lane']}",
+        f"input_lane={info['input_lane']}",
+        f"net_lane={info['net_lane']}",
+        f"progress={info['progress']}",
+        "",
+        "[failure]",
+        f"split_layer={info['split_layer']}",
+        f"split_evidence={info['split_evidence']}",
+        f"storage_residual={info['storage_residual']}",
+        f"storage_residual_region={info['storage_residual_region']}",
+        f"driver_governance={info['driver_governance']}",
+        "",
+        "[triage]",
+        "first_real_machine_focus=handoff,storage,input,display,driver-family",
+        "",
+    ]
+    return "\n".join(out)
+
+
+def main() -> int:
+    try:
+        log_path = Path(sys.argv[1]).resolve()
+        if not log_path.exists():
+            raise FileNotFoundError(log_path)
+        sys.stdout.write(summarize(log_path))
+        return 0
+    except Exception as exc:
+        sys.stderr.write(f"firsthop classification failed: {exc}\n")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

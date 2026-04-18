@@ -3,6 +3,7 @@
 
 /* LunaLoader Stage 1 for the UEFI boot path. */
 
+#include "../include/luna_proto.h"
 #include "uefi_loader_config.h"
 
 #define EFIAPI __attribute__((ms_abi))
@@ -51,6 +52,7 @@ struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
 
 typedef struct EFI_BOOT_SERVICES EFI_BOOT_SERVICES;
 typedef EFI_STATUS(EFIAPI *efi_free_pool_fn_t)(void *buffer);
+typedef EFI_STATUS(EFIAPI *efi_locate_device_path_fn_t)(EFI_GUID *protocol, void **device_path, EFI_HANDLE *device);
 struct EFI_BOOT_SERVICES {
     EFI_TABLE_HEADER hdr;
     void *raise_tpl;
@@ -70,8 +72,10 @@ struct EFI_BOOT_SERVICES {
     void *reinstall_protocol_interface;
     void *uninstall_protocol_interface;
     EFI_STATUS(EFIAPI *handle_protocol)(EFI_HANDLE handle, EFI_GUID *protocol, void **interface_ptr);
+    void *reserved;
+    void *register_protocol_notify;
     void *locate_handle;
-    void *locate_device_path;
+    efi_locate_device_path_fn_t locate_device_path;
     void *install_configuration_table;
     void *load_image;
     void *start_image;
@@ -206,7 +210,21 @@ struct luna_uefi_disk_handoff {
     uint64_t media_id;
     uint64_t read_blocks_entry;
     uint64_t write_blocks_entry;
+    uint64_t diag_status;
+    uint64_t diag_handle_count;
+    uint64_t diag_full_disk_seen;
+    uint64_t target_block_io_protocol;
+    uint64_t target_media_id;
+    uint64_t target_read_blocks_entry;
+    uint64_t target_write_blocks_entry;
+    uint64_t flags;
 };
+
+#define LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE 0x1u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY 0x2u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION 0x4u
+#define LUNA_UEFI_DISK_FLAG_TARGET_PRESENT 0x8u
+#define LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE 0x10u
 
 struct luna_uefi_graphics_handoff {
     uint32_t magic;
@@ -257,20 +275,72 @@ static void patch_manifest(EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
     }
 }
 
-static void write_disk_handoff(EFI_PHYSICAL_ADDRESS scratch_alloc_base, EFI_BLOCK_IO_PROTOCOL *block_io) {
-    struct luna_uefi_disk_handoff *handoff =
-        (struct luna_uefi_disk_handoff *)(uintptr_t)(scratch_alloc_base + 0x100u);
+static struct luna_uefi_disk_handoff *disk_handoff(EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
+    return (struct luna_uefi_disk_handoff *)(uintptr_t)(
+        scratch_alloc_base + LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET
+    );
+}
+
+static void init_disk_handoff(EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
+    struct luna_uefi_disk_handoff *handoff = disk_handoff(scratch_alloc_base);
+    zero_bytes(handoff, sizeof(*handoff));
     handoff->magic = LUNA_UEFI_DISK_MAGIC;
-    handoff->version = 1;
+    handoff->version = 2;
+}
+
+static void write_source_media_flags(EFI_PHYSICAL_ADDRESS scratch_alloc_base, EFI_BLOCK_IO_PROTOCOL *block_io) {
+    struct luna_uefi_disk_handoff *handoff = disk_handoff(scratch_alloc_base);
+    handoff->flags &= ~(uint64_t)(
+        LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE |
+        LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY |
+        LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION
+    );
+    if (block_io == NULL || block_io->media == NULL) {
+        return;
+    }
+    if (block_io->media->removable_media != 0) {
+        handoff->flags |= LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE;
+    }
+    if (block_io->media->read_only != 0) {
+        handoff->flags |= LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY;
+    }
+    if (block_io->media->logical_partition != 0) {
+        handoff->flags |= LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION;
+    }
+}
+
+static void write_boot_disk_handoff(EFI_PHYSICAL_ADDRESS scratch_alloc_base, EFI_BLOCK_IO_PROTOCOL *block_io) {
+    struct luna_uefi_disk_handoff *handoff =
+        disk_handoff(scratch_alloc_base);
     handoff->block_io_protocol = (uint64_t)(uintptr_t)block_io;
     handoff->media_id = block_io->media != NULL ? block_io->media->media_id : 0;
     handoff->read_blocks_entry = (uint64_t)(uintptr_t)block_io->read_blocks;
     handoff->write_blocks_entry = (uint64_t)(uintptr_t)block_io->write_blocks;
 }
 
+static void write_target_disk_handoff(
+    EFI_PHYSICAL_ADDRESS scratch_alloc_base,
+    EFI_BLOCK_IO_PROTOCOL *block_io,
+    EFI_BLOCK_IO_PROTOCOL *boot_block_io
+) {
+    struct luna_uefi_disk_handoff *handoff =
+        disk_handoff(scratch_alloc_base);
+    handoff->target_block_io_protocol = (uint64_t)(uintptr_t)block_io;
+    handoff->target_media_id = block_io->media != NULL ? block_io->media->media_id : 0;
+    handoff->target_read_blocks_entry = (uint64_t)(uintptr_t)block_io->read_blocks;
+    handoff->target_write_blocks_entry = (uint64_t)(uintptr_t)block_io->write_blocks;
+    handoff->flags |= LUNA_UEFI_DISK_FLAG_TARGET_PRESENT;
+    if (block_io != boot_block_io) {
+        handoff->flags |= LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE;
+    }
+    handoff->diag_status = 9u;
+}
+
 static void write_graphics_handoff(EFI_PHYSICAL_ADDRESS scratch_alloc_base, EFI_GRAPHICS_OUTPUT_PROTOCOL *gop) {
     struct luna_uefi_graphics_handoff *handoff =
-        (struct luna_uefi_graphics_handoff *)(uintptr_t)(scratch_alloc_base + 0x180u);
+        (struct luna_uefi_graphics_handoff *)(uintptr_t)(
+            scratch_alloc_base + LUNA_BOOTVIEW_UEFI_GRAPHICS_HANDOFF_OFFSET
+        );
 
     if (gop == NULL || gop->mode == NULL || gop->mode->info == NULL) {
         return;
@@ -295,6 +365,56 @@ static EFI_STATUS print_message(EFI_SYSTEM_TABLE *st, const CHAR16 *text) {
 
 static void print_stage(EFI_SYSTEM_TABLE *st, const CHAR16 *text) {
     (void)print_message(st, text);
+}
+
+static void print_hex64(EFI_SYSTEM_TABLE *st, uint64_t value) {
+    static const CHAR16 digits[] = {
+        '0', '1', '2', '3', '4', '5', '6', '7',
+        '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
+    };
+    CHAR16 buffer[19];
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    for (uint32_t index = 0; index < 16; ++index) {
+        uint32_t shift = (15u - index) * 4u;
+        buffer[2 + index] = digits[(value >> shift) & 0xFu];
+    }
+    buffer[18] = 0;
+    (void)print_message(st, buffer);
+}
+
+static void print_manifest_diag(EFI_SYSTEM_TABLE *st, const CHAR16 *label) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    print_stage(st, label);
+    print_stage(st, L" bootview=");
+    print_hex64(st, manifest->bootview_base);
+    print_stage(st, L" system=");
+    print_hex64(st, manifest->system_store_lba);
+    print_stage(st, L" data=");
+    print_hex64(st, manifest->data_store_lba);
+    print_stage(st, L" install_low=");
+    print_hex64(st, manifest->install_uuid_low);
+    print_stage(st, L" install_high=");
+    print_hex64(st, manifest->install_uuid_high);
+    print_stage(st, L"\r\n");
+}
+
+static void print_disk_diag(EFI_SYSTEM_TABLE *st, EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
+    struct luna_uefi_disk_handoff *handoff = disk_handoff(scratch_alloc_base);
+    print_stage(st, L"LunaLoader UEFI Stage 1 handoff-state scratch=");
+    print_hex64(st, scratch_alloc_base);
+    print_stage(st, L" disk=");
+    print_hex64(st, (uint64_t)(uintptr_t)handoff);
+    print_stage(st, L" magic=");
+    print_hex64(st, handoff->magic);
+    print_stage(st, L" version=");
+    print_hex64(st, handoff->version);
+    print_stage(st, L" status=");
+    print_hex64(st, handoff->diag_status);
+    print_stage(st, L" flags=");
+    print_hex64(st, handoff->flags);
+    print_stage(st, L"\r\n");
 }
 
 static EFI_BOOT_SERVICES *resolve_boot_services(EFI_SYSTEM_TABLE *system_table) {
@@ -372,7 +492,126 @@ static int is_runtime_block_io_candidate(EFI_BLOCK_IO_PROTOCOL *block_io, int re
     return 1;
 }
 
-static int probe_runtime_block_io(EFI_BLOCK_IO_PROTOCOL *block_io, EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
+static int is_boot_block_io_candidate(EFI_BLOCK_IO_PROTOCOL *block_io, int require_full_disk) {
+    if (block_io == NULL
+        || block_io->media == NULL
+        || block_io->read_blocks == NULL
+        || block_io->media->media_present == 0
+        || block_io->media->block_size != 512u) {
+        return 0;
+    }
+    if (require_full_disk && block_io->media->logical_partition != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int probe_boot_block_io(EFI_BLOCK_IO_PROTOCOL *block_io, EFI_PHYSICAL_ADDRESS scratch_alloc_base) {
+    void *buffer = (void *)(uintptr_t)(scratch_alloc_base + 0x400u);
+    if (!is_boot_block_io_candidate(block_io, 0)) {
+        return 0;
+    }
+    return block_io->read_blocks(
+        block_io,
+        block_io->media->media_id,
+        LUNA_RUNTIME_STORE_PROBE_LBA,
+        512u,
+        buffer
+    ) == EFI_SUCCESS;
+}
+
+static EFI_BLOCK_IO_PROTOCOL *resolve_source_block_io(
+    EFI_BOOT_SERVICES *boot_services,
+    EFI_HANDLE preferred_handle,
+    void *preferred_file_path
+) {
+    EFI_BLOCK_IO_PROTOCOL *block_io = NULL;
+    EFI_STATUS status;
+    EFI_HANDLE resolved_handle = NULL;
+    void *device_path = preferred_file_path;
+
+    status = boot_services->handle_protocol(preferred_handle, &kBlockIoProtocolGuid, (void **)&block_io);
+    if (!EFI_ERROR(status) && block_io != NULL) {
+        return block_io;
+    }
+
+    if (boot_services->locate_device_path == NULL || device_path == NULL) {
+        return NULL;
+    }
+    status = boot_services->locate_device_path(&kBlockIoProtocolGuid, &device_path, &resolved_handle);
+    if (EFI_ERROR(status) || resolved_handle == NULL) {
+        return NULL;
+    }
+    block_io = NULL;
+    status = boot_services->handle_protocol(resolved_handle, &kBlockIoProtocolGuid, (void **)&block_io);
+    if (EFI_ERROR(status) || block_io == NULL) {
+        return NULL;
+    }
+    return block_io;
+}
+
+static EFI_BLOCK_IO_PROTOCOL *select_boot_block_io(
+    EFI_BOOT_SERVICES *boot_services,
+    EFI_HANDLE preferred_handle,
+    void *preferred_file_path,
+    EFI_PHYSICAL_ADDRESS scratch_alloc_base,
+    int allow_full_disk_scan
+) {
+    EFI_BLOCK_IO_PROTOCOL *block_io = NULL;
+    EFI_HANDLE *handles = NULL;
+    UINTN handle_count = 0;
+    EFI_STATUS status;
+    EFI_HANDLE resolved_handle = NULL;
+    void *device_path = preferred_file_path;
+
+    status = boot_services->handle_protocol(preferred_handle, &kBlockIoProtocolGuid, (void **)&block_io);
+    if (!EFI_ERROR(status)
+        && is_boot_block_io_candidate(block_io, 1)
+        && probe_boot_block_io(block_io, scratch_alloc_base)) {
+        return block_io;
+    }
+
+    if (boot_services->locate_device_path != NULL && device_path != NULL) {
+        status = boot_services->locate_device_path(&kBlockIoProtocolGuid, &device_path, &resolved_handle);
+        if (!EFI_ERROR(status) && resolved_handle != NULL) {
+            block_io = NULL;
+            status = boot_services->handle_protocol(resolved_handle, &kBlockIoProtocolGuid, (void **)&block_io);
+            if (!EFI_ERROR(status)
+                && is_boot_block_io_candidate(block_io, 1)
+                && probe_boot_block_io(block_io, scratch_alloc_base)) {
+                return block_io;
+            }
+        }
+    }
+
+    if (allow_full_disk_scan && boot_services->locate_handle_buffer != NULL) {
+        status = boot_services->locate_handle_buffer(2u, &kBlockIoProtocolGuid, NULL, &handle_count, &handles);
+        if (!EFI_ERROR(status) && handles != NULL) {
+            for (UINTN i = 0; i < handle_count; ++i) {
+                block_io = NULL;
+                status = boot_services->handle_protocol(handles[i], &kBlockIoProtocolGuid, (void **)&block_io);
+                if (!EFI_ERROR(status)
+                    && is_boot_block_io_candidate(block_io, 1)
+                    && probe_boot_block_io(block_io, scratch_alloc_base)) {
+                    if (boot_services->free_pool != NULL) {
+                        (void)boot_services->free_pool(handles);
+                    }
+                    return block_io;
+                }
+            }
+            if (boot_services->free_pool != NULL) {
+                (void)boot_services->free_pool(handles);
+            }
+        }
+    }
+    return NULL;
+}
+
+static int probe_runtime_block_io(
+    EFI_BLOCK_IO_PROTOCOL *block_io,
+    EFI_PHYSICAL_ADDRESS scratch_alloc_base,
+    int require_write
+) {
     void *buffer = (void *)(uintptr_t)(scratch_alloc_base + 0x400u);
     if (!is_runtime_block_io_candidate(block_io, 0)) {
         return 0;
@@ -386,56 +625,106 @@ static int probe_runtime_block_io(EFI_BLOCK_IO_PROTOCOL *block_io, EFI_PHYSICAL_
     ) != EFI_SUCCESS) {
         return 0;
     }
-    if (block_io->write_blocks(
+    if (require_write) {
+        return block_io->write_blocks(
+            block_io,
+            block_io->media->media_id,
+            LUNA_RUNTIME_STORE_PROBE_LBA,
+            512u,
+            buffer
+        ) == EFI_SUCCESS;
+    }
+    /*
+     * VMware's installed-boot UEFI SCSI path can reject a pre-exit write probe
+     * on the full-disk handle even though the same Block I/O handle remains the
+     * only viable runtime path for LSYS/LDAT reads after handoff. Preserve that
+     * path for normal boot, but let installer-media target selection require a
+     * successful write-capable handle.
+     */
+    (void)block_io->write_blocks(
         block_io,
         block_io->media->media_id,
         LUNA_RUNTIME_STORE_PROBE_LBA,
         512u,
         buffer
-    ) != EFI_SUCCESS) {
-        return 0;
-    }
+    );
     return 1;
 }
 
 static EFI_BLOCK_IO_PROTOCOL *select_runtime_block_io(
     EFI_BOOT_SERVICES *boot_services,
     EFI_HANDLE preferred_handle,
-    EFI_PHYSICAL_ADDRESS scratch_alloc_base
+    void *preferred_file_path,
+    EFI_PHYSICAL_ADDRESS scratch_alloc_base,
+    int require_write
 ) {
     EFI_BLOCK_IO_PROTOCOL *block_io = NULL;
     EFI_HANDLE *handles = NULL;
     UINTN handle_count = 0;
     EFI_STATUS status;
+    EFI_HANDLE resolved_handle = NULL;
+    void *device_path = preferred_file_path;
 
     status = boot_services->handle_protocol(preferred_handle, &kBlockIoProtocolGuid, (void **)&block_io);
-    if (!EFI_ERROR(status)
-        && is_runtime_block_io_candidate(block_io, 1)
-        && probe_runtime_block_io(block_io, scratch_alloc_base)) {
-        return block_io;
+    if (!EFI_ERROR(status)) {
+        if (is_runtime_block_io_candidate(block_io, 1)) {
+            if (probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+                return block_io;
+            }
+            disk_handoff(scratch_alloc_base)->diag_status = 3u;
+        } else {
+            disk_handoff(scratch_alloc_base)->diag_status = 2u;
+        }
+    } else {
+        disk_handoff(scratch_alloc_base)->diag_status = 1u;
+    }
+
+    if (boot_services->locate_device_path != NULL && device_path != NULL) {
+        status = boot_services->locate_device_path(&kBlockIoProtocolGuid, &device_path, &resolved_handle);
+        if (!EFI_ERROR(status) && resolved_handle != NULL) {
+            block_io = NULL;
+            status = boot_services->handle_protocol(resolved_handle, &kBlockIoProtocolGuid, (void **)&block_io);
+            if (!EFI_ERROR(status)
+                && is_runtime_block_io_candidate(block_io, 0)
+                && probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+                disk_handoff(scratch_alloc_base)->diag_status = 10u;
+                return block_io;
+            }
+            disk_handoff(scratch_alloc_base)->diag_status = 8u;
+        }
     }
 
     if (boot_services->locate_handle_buffer == NULL) {
-        return (is_runtime_block_io_candidate(block_io, 0) && probe_runtime_block_io(block_io, scratch_alloc_base))
-            ? block_io
-            : NULL;
+        if (is_runtime_block_io_candidate(block_io, 0)
+            && probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+            return block_io;
+        }
+        disk_handoff(scratch_alloc_base)->diag_status = 4u;
+        return NULL;
     }
     status = boot_services->locate_handle_buffer(2u, &kBlockIoProtocolGuid, NULL, &handle_count, &handles);
     if (EFI_ERROR(status) || handles == NULL) {
-        return (is_runtime_block_io_candidate(block_io, 0) && probe_runtime_block_io(block_io, scratch_alloc_base))
-            ? block_io
-            : NULL;
+        if (is_runtime_block_io_candidate(block_io, 0)
+            && probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+            return block_io;
+        }
+        disk_handoff(scratch_alloc_base)->diag_status = 5u;
+        return NULL;
     }
+    disk_handoff(scratch_alloc_base)->diag_handle_count = handle_count;
     for (UINTN i = 0; i < handle_count; ++i) {
         block_io = NULL;
         status = boot_services->handle_protocol(handles[i], &kBlockIoProtocolGuid, (void **)&block_io);
         if (!EFI_ERROR(status)
-            && is_runtime_block_io_candidate(block_io, 1)
-            && probe_runtime_block_io(block_io, scratch_alloc_base)) {
-            if (boot_services->free_pool != NULL) {
-                (void)boot_services->free_pool(handles);
+            && is_runtime_block_io_candidate(block_io, 1)) {
+            disk_handoff(scratch_alloc_base)->diag_full_disk_seen += 1u;
+            if (probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+                if (boot_services->free_pool != NULL) {
+                    (void)boot_services->free_pool(handles);
+                }
+                return block_io;
             }
-            return block_io;
+            disk_handoff(scratch_alloc_base)->diag_status = 6u;
         }
     }
     for (UINTN i = 0; i < handle_count; ++i) {
@@ -443,7 +732,7 @@ static EFI_BLOCK_IO_PROTOCOL *select_runtime_block_io(
         status = boot_services->handle_protocol(handles[i], &kBlockIoProtocolGuid, (void **)&block_io);
         if (!EFI_ERROR(status)
             && is_runtime_block_io_candidate(block_io, 0)
-            && probe_runtime_block_io(block_io, scratch_alloc_base)) {
+            && probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
             if (boot_services->free_pool != NULL) {
                 (void)boot_services->free_pool(handles);
             }
@@ -453,9 +742,14 @@ static EFI_BLOCK_IO_PROTOCOL *select_runtime_block_io(
     if (boot_services->free_pool != NULL) {
         (void)boot_services->free_pool(handles);
     }
-    return (is_runtime_block_io_candidate(block_io, 0) && probe_runtime_block_io(block_io, scratch_alloc_base))
-        ? block_io
-        : NULL;
+    if (is_runtime_block_io_candidate(block_io, 0)
+        && probe_runtime_block_io(block_io, scratch_alloc_base, require_write)) {
+        return block_io;
+    }
+    if (disk_handoff(scratch_alloc_base)->diag_status == 0u) {
+        disk_handoff(scratch_alloc_base)->diag_status = 7u;
+    }
+    return NULL;
 }
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *locate_gop(EFI_BOOT_SERVICES *boot_services, EFI_SYSTEM_TABLE *system_table) {
@@ -505,11 +799,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     EFI_STATUS status;
     EFI_BOOT_SERVICES *boot_services;
     EFI_LOADED_IMAGE_PROTOCOL *loaded_image = NULL;
+    EFI_BLOCK_IO_PROTOCOL *source_block_io = NULL;
+    EFI_BLOCK_IO_PROTOCOL *boot_block_io = NULL;
     EFI_BLOCK_IO_PROTOCOL *runtime_block_io = NULL;
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
     EFI_PHYSICAL_ADDRESS load_addr = LUNA_STAGE_LOAD_ADDR;
     EFI_PHYSICAL_ADDRESS scratch_alloc_base = 0;
     uint64_t manifest_magic;
+    int installer_boot = 0;
 
     print_stage(system_table, L"LunaLoader UEFI Stage 1 handoff\r\n");
 
@@ -552,6 +849,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
         return status;
     }
     print_stage(system_table, L"LunaLoader UEFI Stage 1 stage-load ok\r\n");
+    print_manifest_diag(system_table, L"LunaLoader UEFI Stage 1 manifest-pre");
 
     manifest_magic = *(volatile uint32_t *)(uintptr_t)LUNA_MANIFEST_ADDR;
     if (manifest_magic != 0x414E554Cu) {
@@ -560,9 +858,44 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     }
     print_stage(system_table, L"LunaLoader UEFI Stage 1 manifest ok\r\n");
 
-    runtime_block_io = select_runtime_block_io(boot_services, loaded_image->device_handle, scratch_alloc_base);
+    init_disk_handoff(scratch_alloc_base);
+    source_block_io = resolve_source_block_io(
+        boot_services,
+        loaded_image->device_handle,
+        loaded_image->file_path
+    );
+    if (source_block_io != NULL) {
+        write_source_media_flags(scratch_alloc_base, source_block_io);
+        if (source_block_io->media != NULL
+            && (source_block_io->media->removable_media != 0
+                || source_block_io->media->read_only != 0)) {
+            installer_boot = 1;
+        }
+    }
+    boot_block_io = select_boot_block_io(
+        boot_services,
+        loaded_image->device_handle,
+        loaded_image->file_path,
+        scratch_alloc_base,
+        installer_boot == 0
+    );
+    if (boot_block_io != NULL) {
+        write_boot_disk_handoff(scratch_alloc_base, boot_block_io);
+        if (boot_block_io->media != NULL
+            && (boot_block_io->media->removable_media != 0
+                || boot_block_io->media->read_only != 0)) {
+            installer_boot = 1;
+        }
+    }
+    runtime_block_io = select_runtime_block_io(
+        boot_services,
+        loaded_image->device_handle,
+        loaded_image->file_path,
+        scratch_alloc_base,
+        installer_boot
+    );
     if (runtime_block_io != NULL) {
-        write_disk_handoff(scratch_alloc_base, runtime_block_io);
+        write_target_disk_handoff(scratch_alloc_base, runtime_block_io, boot_block_io);
         print_stage(system_table, L"LunaLoader UEFI Stage 1 block-io ready\r\n");
     } else {
         print_stage(system_table, L"LunaLoader UEFI Stage 1 block-io missing\r\n");
@@ -574,7 +907,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
     } else {
         print_stage(system_table, L"LunaLoader UEFI Stage 1 gop missing\r\n");
     }
+    print_disk_diag(system_table, scratch_alloc_base);
     patch_manifest(scratch_alloc_base);
+    print_manifest_diag(system_table, L"LunaLoader UEFI Stage 1 manifest-post");
     print_stage(system_table, L"LunaLoader UEFI Stage 1 jump stage\r\n");
     ((boot_entry_fn_t)(uintptr_t)(LUNA_STAGE_LOAD_ADDR + LUNA_BOOT_ENTRY_OFFSET))();
     return EFI_SUCCESS;

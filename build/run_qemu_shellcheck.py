@@ -98,11 +98,16 @@ def main() -> int:
         b"home.status\r\n"
         b"cap-count\r\n"
         b"cap-list\r\n"
+        b"lasql.catalog\r\n"
+        b"lasql.files\r\n"
+        b"lasql.logs\r\n"
         b"seal-list\r\n"
         b"space-map\r\n"
         b"store-info\r\n"
         b"store-check\r\n"
         b"list-apps\r\n"
+        b"run Files\r\n"
+        b"run Guard\r\n"
         b"package.install sample\r\n"
         b"list-apps\r\n"
         b"run sample\r\n"
@@ -151,7 +156,7 @@ def main() -> int:
         )
 
         try:
-            deadline = time.time() + 45.0
+            deadline = time.time() + 90.0
             while time.time() < deadline:
                 if LOG_PATH.exists():
                     text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
@@ -173,6 +178,23 @@ def main() -> int:
     required = [
         "[USER] shell ready",
         "first-setup required: no hostname or user configured",
+        "[DEVICE] fwblk source=missing target=missing",
+        "[DEVICE] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=normal",
+        "[DEVICE] disk select basis=piix-ide fwblk-src=missing fwblk-tgt=missing separate=missing ahci=missing pci=ready",
+        "[DEVICE] disk pci vendor=8086 device=7010 bdf=00:01.01 class=01/01/80 hdr=00",
+        "[DEVICE] serial path driver=piix-uart family=00000012",
+        "[DEVICE] serial select basis=piix-pci pci=ready",
+        "[DEVICE] serial pci vendor=8086 device=7000 bdf=00:01.00 class=06/01/00 hdr=80",
+        "[DEVICE] display path driver=std-vga-text family=0000000F",
+        "[DEVICE] display select basis=std-vga-text gop=missing pci=ready",
+        "[DEVICE] display pci vendor=1234 device=1111 bdf=00:02.00 class=03/00/00 hdr=00",
+        "[DEVICE] input path kbd=i8042-kbd ptr=i8042-mouse virtio=missing ps2=present lane=ready",
+        "[DEVICE] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready",
+        "[DEVICE] input ctrl legacy=i8042",
+        "[DEVICE] net path driver=e1000 family=0000000B lane=ready",
+        "[DEVICE] net select basis=e1000-ready pci=ready live=ready",
+        "[DEVICE] net pci vendor=8086 device=100E bdf=00:03.00 class=02/00/00 hdr=00",
+        "[DEVICE] platform pci vendor=8086 device=1237 bdf=00:00.00 class=06/00/00 hdr=00",
         "setup.status",
         "setup state=required login=locked user=guest host=luna",
         "setup.init luna dev secret",
@@ -186,13 +208,26 @@ def main() -> int:
         "home owner=dev@luna",
         "home.documents=0x",
         "cap-count",
-        "caps: 021",
+        "caps: 023",
         "cap-list",
         "user.shell uses=",
         "system.query uses=",
         "program.load uses=",
         "device.list uses=",
         "graphics.draw uses=",
+        "lasql.catalog",
+        "audit lasql.query govern allow",
+        "audit lasql.query package",
+        "lasql.catalog ok",
+        "lasql.files",
+        "audit lasql.query files",
+        "lasql.files ok",
+        "lasql.logs",
+        "lasql.logs ok",
+        "audit lasql.query files type=",
+        "audit lasql.query package type=",
+        "audit package.query source=lasql kind=list",
+        "audit package.query source=lasql kind=resolve",
         "seal-list",
         "seals: 0",
         "space-map",
@@ -218,6 +253,15 @@ def main() -> int:
         "Files",
         "Guard",
         "Console",
+        "run Files",
+        "files surface ready",
+        "files.user",
+        "files.visible=",
+        "files.current=",
+        "run Guard",
+        "security center",
+        "observe entries:",
+        "observe level:",
         "package.install sample",
         "audit package.install approved=SECURITY",
         "audit package.install persisted=DATA authority=PACKAGE",
@@ -253,7 +297,7 @@ def main() -> int:
         "net.external bytes=8 data=luna-ext",
         "revoke-cap program.load",
         "revoked: program.load (1)",
-        "caps: 020",
+        "caps: 022",
         "run Settings",
         "launch request: Settings",
         "settings surface ready",
@@ -268,7 +312,7 @@ def main() -> int:
         "unknown command; run help",
         "revoke-cap device.list",
         "revoked: device.list (1)",
-        "caps: 019",
+        "caps: 021",
         "list-devices",
         "list-devices failed",
     ]

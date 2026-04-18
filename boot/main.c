@@ -11,6 +11,7 @@ typedef void (SYSV_ABI *security_gate_fn_t)(struct luna_gate *gate);
 typedef void (SYSV_ABI *lifecycle_gate_fn_t)(struct luna_lifecycle_gate *gate);
 typedef void (SYSV_ABI *system_gate_fn_t)(struct luna_system_gate *gate);
 
+#define LUNA_UEFI_DISK_MAGIC 0x49464555u
 #define LUNA_UEFI_GRAPHICS_MAGIC 0x46504755u
 #define LUNA_NATIVE_RESERVED_PROFILE 6u
 #define LUNA_NATIVE_RESERVED_INSTALL_LOW 7u
@@ -28,6 +29,33 @@ struct luna_uefi_graphics_handoff {
     uint32_t pixels_per_scanline;
     uint32_t pixel_format;
 };
+
+struct luna_uefi_disk_handoff {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t block_io_protocol;
+    uint64_t media_id;
+    uint64_t read_blocks_entry;
+    uint64_t write_blocks_entry;
+    uint64_t diag_status;
+    uint64_t diag_handle_count;
+    uint64_t diag_full_disk_seen;
+    uint64_t target_block_io_protocol;
+    uint64_t target_media_id;
+    uint64_t target_read_blocks_entry;
+    uint64_t target_write_blocks_entry;
+    uint64_t flags;
+};
+
+#define LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE 0x1u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY 0x2u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION 0x4u
+#define LUNA_UEFI_DISK_FLAG_TARGET_PRESENT 0x8u
+#define LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE 0x10u
+#define LUNA_BOOT_VALIDATE_FWBLK_HANDOFF 0x1u
+#define LUNA_BOOT_VALIDATE_LSYS_READ_OK 0x2u
+#define LUNA_BOOT_VALIDATE_NATIVE_PAIR_OK 0x4u
+#define LUNA_BOOT_VALIDATE_CONTINUING 0x8u
 
 static inline void outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -87,6 +115,24 @@ static void serial_write(const char *text) {
     }
 }
 
+static void serial_write_hex8(uint8_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    serial_putc(digits[(value >> 4) & 0x0Fu]);
+    serial_putc(digits[value & 0x0Fu]);
+}
+
+static void serial_write_hex32(uint32_t value) {
+    serial_write_hex8((uint8_t)(value >> 24));
+    serial_write_hex8((uint8_t)(value >> 16));
+    serial_write_hex8((uint8_t)(value >> 8));
+    serial_write_hex8((uint8_t)value);
+}
+
+static void serial_write_hex64(uint64_t value) {
+    serial_write_hex32((uint32_t)(value >> 32));
+    serial_write_hex32((uint32_t)(value & 0xFFFFFFFFu));
+}
+
 static void zero_bytes(void *ptr, size_t len) {
     uint8_t *out = (uint8_t *)ptr;
     for (size_t i = 0; i < len; ++i) {
@@ -142,22 +188,80 @@ static void apply_storage_gate(volatile struct luna_bootview *bootview, uint32_t
     bootview->system_mode = mode;
 }
 
-static void validate_native_pair(volatile struct luna_bootview *bootview) {
+static void apply_installer_target_binding(
+    volatile struct luna_bootview *bootview,
+    volatile const struct luna_uefi_disk_handoff *disk_handoff
+) {
+    bootview->installer_target_flags = 0u;
+    bootview->installer_target_system_lba = 0u;
+    bootview->installer_target_data_lba = 0u;
+    if (disk_handoff == 0 || disk_handoff->magic != LUNA_UEFI_DISK_MAGIC) {
+        return;
+    }
+    if ((disk_handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_PRESENT) != 0u) {
+        bootview->installer_target_flags |= LUNA_INSTALL_TARGET_PRESENT;
+    }
+    if ((disk_handoff->flags & (LUNA_UEFI_DISK_FLAG_TARGET_PRESENT | LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE)) ==
+        (LUNA_UEFI_DISK_FLAG_TARGET_PRESENT | LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE)) {
+        bootview->installer_target_flags |= LUNA_INSTALL_TARGET_BOUND;
+        bootview->installer_target_system_lba = bootview->system_store_lba;
+        bootview->installer_target_data_lba = bootview->data_store_lba;
+    }
+}
+
+static int is_installer_media_boot(const volatile struct luna_uefi_disk_handoff *disk_handoff) {
+    if (disk_handoff == NULL || disk_handoff->magic != LUNA_UEFI_DISK_MAGIC) {
+        return 0;
+    }
+    if ((disk_handoff->flags & (
+        LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE |
+        LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY
+    )) != 0u) {
+        return 1;
+    }
+    return 0;
+}
+
+static int has_firmware_block_handoff(const volatile struct luna_uefi_disk_handoff *disk_handoff) {
+    if (disk_handoff == NULL || disk_handoff->magic != LUNA_UEFI_DISK_MAGIC) {
+        return 0;
+    }
+    return disk_handoff->block_io_protocol != 0u && disk_handoff->read_blocks_entry != 0u;
+}
+
+static uint32_t validate_native_pair(volatile struct luna_bootview *bootview) {
     struct luna_store_superblock system_super;
     struct luna_store_superblock data_super;
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_uefi_disk_handoff *disk_handoff =
+        (volatile struct luna_uefi_disk_handoff *)(uintptr_t)(
+            manifest->bootview_base + LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET
+        );
+    uint32_t evidence = 0u;
 
     zero_bytes(&system_super, sizeof(system_super));
     zero_bytes(&data_super, sizeof(data_super));
 
+    if (has_firmware_block_handoff(disk_handoff)) {
+        evidence |= LUNA_BOOT_VALIDATE_FWBLK_HANDOFF;
+    }
+
     if (device_read_sector((uint32_t)bootview->system_store_lba, &system_super) != LUNA_DEVICE_OK) {
+        if (is_installer_media_boot(disk_handoff)) {
+            apply_storage_gate(bootview, LUNA_VOLUME_HEALTHY, LUNA_MODE_INSTALL);
+            serial_write("[BOOT] installer media mode\r\n");
+            return evidence;
+        }
         apply_storage_gate(bootview, LUNA_VOLUME_FATAL_UNRECOVERABLE, LUNA_MODE_FATAL);
         serial_write("[BOOT] lsys read fail\r\n");
-        return;
+        return evidence;
     }
+    evidence |= LUNA_BOOT_VALIDATE_LSYS_READ_OK;
     if (device_read_sector((uint32_t)bootview->data_store_lba, &data_super) != LUNA_DEVICE_OK) {
         apply_storage_gate(bootview, LUNA_VOLUME_RECOVERY_REQUIRED, LUNA_MODE_RECOVERY);
         serial_write("[BOOT] ldat read fail\r\n");
-        return;
+        return evidence;
     }
 
     if (system_super.magic != 0x5346414Cu || system_super.version != 3u ||
@@ -166,8 +270,26 @@ static void validate_native_pair(volatile struct luna_bootview *bootview) {
         system_super.reserved[LUNA_NATIVE_RESERVED_INSTALL_HIGH] != bootview->install_uuid_high ||
         system_super.reserved[LUNA_NATIVE_RESERVED_PEER_LBA] != bootview->data_store_lba) {
         apply_storage_gate(bootview, LUNA_VOLUME_FATAL_INCOMPATIBLE, LUNA_MODE_FATAL);
+        serial_write("[BOOT] lsys actual profile=");
+        serial_write_hex64(system_super.reserved[LUNA_NATIVE_RESERVED_PROFILE]);
+        serial_write(" install_low=");
+        serial_write_hex64(system_super.reserved[LUNA_NATIVE_RESERVED_INSTALL_LOW]);
+        serial_write(" install_high=");
+        serial_write_hex64(system_super.reserved[LUNA_NATIVE_RESERVED_INSTALL_HIGH]);
+        serial_write(" peer=");
+        serial_write_hex64(system_super.reserved[LUNA_NATIVE_RESERVED_PEER_LBA]);
+        serial_write("\r\n");
+        serial_write("[BOOT] lsys expect profile=");
+        serial_write_hex64(LUNA_NATIVE_PROFILE_SYSTEM);
+        serial_write(" install_low=");
+        serial_write_hex64(bootview->install_uuid_low);
+        serial_write(" install_high=");
+        serial_write_hex64(bootview->install_uuid_high);
+        serial_write(" peer=");
+        serial_write_hex64(bootview->data_store_lba);
+        serial_write("\r\n");
         serial_write("[BOOT] lsys contract fail\r\n");
-        return;
+        return evidence;
     }
 
     if (data_super.magic != 0x5346414Cu || data_super.version != 3u ||
@@ -177,19 +299,23 @@ static void validate_native_pair(volatile struct luna_bootview *bootview) {
         data_super.reserved[LUNA_NATIVE_RESERVED_PEER_LBA] != bootview->system_store_lba) {
         apply_storage_gate(bootview, LUNA_VOLUME_RECOVERY_REQUIRED, LUNA_MODE_RECOVERY);
         serial_write("[BOOT] ldat contract fail\r\n");
-        return;
+        return evidence;
     }
+    evidence |= LUNA_BOOT_VALIDATE_NATIVE_PAIR_OK;
 
     if (system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] == LUNA_ACTIVATION_RECOVERY) {
         apply_storage_gate(bootview, LUNA_VOLUME_RECOVERY_REQUIRED, LUNA_MODE_RECOVERY);
         serial_write("[BOOT] activation recovery\r\n");
-        return;
+        return evidence;
     }
     if (system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] != LUNA_ACTIVATION_ACTIVE &&
         system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] != LUNA_ACTIVATION_COMMITTED) {
         apply_storage_gate(bootview, LUNA_VOLUME_FATAL_INCOMPATIBLE, LUNA_MODE_FATAL);
         serial_write("[BOOT] activation invalid\r\n");
+        return evidence;
     }
+    evidence |= LUNA_BOOT_VALIDATE_CONTINUING;
+    return evidence;
 }
 
 static uint32_t list_capabilities(void) {
@@ -232,8 +358,14 @@ void SYSV_ABI boot_main(void) {
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     volatile struct luna_bootview *bootview =
         (volatile struct luna_bootview *)(uintptr_t)manifest->bootview_base;
+    volatile struct luna_uefi_disk_handoff *disk_handoff =
+        (volatile struct luna_uefi_disk_handoff *)(uintptr_t)(
+            manifest->bootview_base + LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET
+        );
     volatile struct luna_uefi_graphics_handoff *graphics_handoff =
-        (volatile struct luna_uefi_graphics_handoff *)(uintptr_t)(manifest->bootview_base + 0x180u);
+        (volatile struct luna_uefi_graphics_handoff *)(uintptr_t)(
+            manifest->bootview_base + LUNA_BOOTVIEW_UEFI_GRAPHICS_HANDOFF_OFFSET
+        );
     struct luna_cid life_spawn = {0, 0};
 
     serial_init();
@@ -277,7 +409,34 @@ void SYSV_ABI boot_main(void) {
     bootview->data_store_lba = manifest->data_store_lba;
     bootview->volume_state = LUNA_VOLUME_HEALTHY;
     bootview->system_mode = LUNA_MODE_NORMAL;
+    apply_installer_target_binding(bootview, disk_handoff);
+    if (is_installer_media_boot(disk_handoff)) {
+        apply_storage_gate(bootview, LUNA_VOLUME_HEALTHY, LUNA_MODE_INSTALL);
+    }
     serial_write(msg_bootview_done);
+    serial_write("[BOOT] manifest bootview=");
+    serial_write_hex64(manifest->bootview_base);
+    serial_write(" system=");
+    serial_write_hex64(manifest->system_store_lba);
+    serial_write(" data=");
+    serial_write_hex64(manifest->data_store_lba);
+    serial_write(" install_low=");
+    serial_write_hex64(manifest->install_uuid_low);
+    serial_write(" install_high=");
+    serial_write_hex64(manifest->install_uuid_high);
+    serial_write("\r\n");
+    serial_write("[BOOT] handoff ptr=");
+    serial_write_hex64((uint64_t)(uintptr_t)disk_handoff);
+    serial_write(" bootview ptr=");
+    serial_write_hex64((uint64_t)(uintptr_t)bootview);
+    serial_write("\r\n");
+    serial_write("[BOOT] fwblk magic=");
+    serial_write_hex32(disk_handoff->magic);
+    serial_write(" version=");
+    serial_write_hex32(disk_handoff->version);
+    serial_write(" status=");
+    serial_write_hex64(disk_handoff->diag_status);
+    serial_write("\r\n");
 
     if (graphics_handoff->magic == LUNA_UEFI_GRAPHICS_MAGIC) {
         bootview->framebuffer_base = graphics_handoff->framebuffer_base;
@@ -296,8 +455,21 @@ void SYSV_ABI boot_main(void) {
     serial_write(msg_sec_return);
 
     if (request_capability(LUNA_CAP_DEVICE_READ, &g_device_read_cid) == LUNA_GATE_OK) {
+        uint32_t validate_evidence = 0u;
         serial_write(msg_device_ok);
-        validate_native_pair(bootview);
+        validate_evidence = validate_native_pair(bootview);
+        if ((validate_evidence & LUNA_BOOT_VALIDATE_FWBLK_HANDOFF) != 0u) {
+            serial_write("[BOOT] fwblk handoff ok\r\n");
+        }
+        if ((validate_evidence & LUNA_BOOT_VALIDATE_LSYS_READ_OK) != 0u) {
+            serial_write("[BOOT] lsys super read ok\r\n");
+        }
+        if ((validate_evidence & LUNA_BOOT_VALIDATE_NATIVE_PAIR_OK) != 0u) {
+            serial_write("[BOOT] native pair ok\r\n");
+        }
+        if ((validate_evidence & LUNA_BOOT_VALIDATE_CONTINUING) != 0u) {
+            serial_write("[BOOT] continuing boot\r\n");
+        }
     } else {
         serial_write(msg_device_fail);
         apply_storage_gate(bootview, LUNA_VOLUME_RECOVERY_REQUIRED, LUNA_MODE_RECOVERY);

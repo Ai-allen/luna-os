@@ -17,7 +17,25 @@ struct luna_uefi_disk_handoff {
     uint64_t media_id;
     uint64_t read_blocks_entry;
     uint64_t write_blocks_entry;
+    uint64_t diag_status;
+    uint64_t diag_handle_count;
+    uint64_t diag_full_disk_seen;
+    uint64_t target_block_io_protocol;
+    uint64_t target_media_id;
+    uint64_t target_read_blocks_entry;
+    uint64_t target_write_blocks_entry;
+    uint64_t flags;
 };
+
+#define LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE 0x1u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY 0x2u
+#define LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION 0x4u
+#define LUNA_UEFI_DISK_FLAG_TARGET_PRESENT 0x8u
+#define LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE 0x10u
+#define LUNA_NATIVE_LAYOUT_RECORD_SECTORS 24u
+#define LUNA_NATIVE_LAYOUT_TXN_SECTORS 2u
+#define LUNA_STORE_STATE_CLEAN 0x434C45414E000001ull
+#define LUNA_STORE_STATE_DIRTY 0x4449525459000001ull
 
 struct virtio_pci_cap {
     uint8_t cap_vndr;
@@ -100,6 +118,13 @@ typedef uint64_t (MS_ABI *efi_block_rw_fn_t)(
 );
 
 static volatile struct luna_uefi_disk_handoff *uefi_disk_handoff(void);
+static int installer_target_bound(void);
+static int installer_media_mode(void);
+static int fwblk_source_ready(void);
+static int fwblk_target_ready(void);
+static int fwblk_target_separate(void);
+static const char *flag_state_name(int value);
+static const char *serial_selection_basis_name(void);
 
 static inline void outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -201,6 +226,12 @@ static uint16_t g_net_tx_index = 0u;
 static uint16_t g_net_tx_tail = 0u;
 static uint64_t g_net_tx_packets = 0u;
 static uint64_t g_net_rx_packets = 0u;
+static struct luna_pci_record g_serial_pci = {0};
+static struct luna_pci_record g_disk_pci = {0};
+static struct luna_pci_record g_display_pci = {0};
+static struct luna_pci_record g_input_pci = {0};
+static struct luna_pci_record g_net_pci = {0};
+static struct luna_pci_record g_platform_pci = {0};
 static uint8_t g_virtio_kbd_bus = 0u;
 static uint8_t g_virtio_kbd_slot = 0u;
 static uint8_t g_virtio_kbd_function = 0u;
@@ -216,6 +247,10 @@ static struct luna_cid g_observe_log_cid = {0u, 0u};
 static uint8_t g_observe_logging_enabled = 0u;
 static uint64_t g_seen_device_cids[16][2];
 static uint32_t g_observe_invoke_budget = 64u;
+static struct {
+    uint32_t gate;
+    uint32_t status;
+} g_cap_deny_seen[16];
 static struct luna_cid g_data_seed_cid = {0u, 0u};
 static struct luna_cid g_data_pour_cid = {0u, 0u};
 static struct luna_cid g_data_draw_cid = {0u, 0u};
@@ -449,9 +484,12 @@ static uint32_t disk_driver_family(void) {
     if (g_ahci_ready != 0u) {
         return LUNA_LANE_DRIVER_AHCI;
     }
+    if (g_disk_driver_family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+        return LUNA_LANE_DRIVER_UEFI_BLOCK_IO;
+    }
     if (handoff->magic == LUNA_UEFI_DISK_MAGIC
-        && handoff->block_io_protocol != 0u
-        && handoff->read_blocks_entry != 0u) {
+        && ((handoff->block_io_protocol != 0u && handoff->read_blocks_entry != 0u) ||
+            (handoff->target_block_io_protocol != 0u && handoff->target_read_blocks_entry != 0u))) {
         return LUNA_LANE_DRIVER_UEFI_BLOCK_IO;
     }
     if (pci_find_class_device(0x01u, 0x01u, 0x80u, 0x8086u, 0x7010u)) {
@@ -1461,9 +1499,33 @@ static void observe_device_connection(uint64_t cid_low, uint64_t cid_high) {
     }
 }
 
+static int should_log_cap_deny(uint32_t target_gate, uint32_t status) {
+    for (size_t i = 0u; i < sizeof(g_cap_deny_seen) / sizeof(g_cap_deny_seen[0]); ++i) {
+        if (g_cap_deny_seen[i].gate == target_gate && g_cap_deny_seen[i].status == status) {
+            return 0;
+        }
+    }
+    for (size_t i = 0u; i < sizeof(g_cap_deny_seen) / sizeof(g_cap_deny_seen[0]); ++i) {
+        if (g_cap_deny_seen[i].gate == 0u && g_cap_deny_seen[i].status == 0u) {
+            g_cap_deny_seen[i].gate = target_gate;
+            g_cap_deny_seen[i].status = status;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int allow_device_call(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
-    if (validate_capability(domain_key, cid_low, cid_high, target_gate) != LUNA_GATE_OK) {
+    uint32_t status = validate_capability(domain_key, cid_low, cid_high, target_gate);
+    if (status != LUNA_GATE_OK) {
         observe_log(3u, "device.call denied");
+        if (should_log_cap_deny(target_gate, status)) {
+            serial_write("[DEVICE] cap deny gate=");
+            serial_write_hex32(target_gate);
+            serial_write(" status=");
+            serial_write_hex32(status);
+            serial_write("\r\n");
+        }
         return 0;
     }
     observe_device_connection(cid_low, cid_high);
@@ -1697,6 +1759,239 @@ static int pci_find_ahci_location(uint8_t *bus_out, uint8_t *slot_out, uint8_t *
         }
     }
     return 0;
+}
+
+static void pci_record_clear(struct luna_pci_record *record) {
+    if (record == 0) {
+        return;
+    }
+    *record = (struct luna_pci_record){0};
+}
+
+static int pci_record_present(const struct luna_pci_record *record) {
+    if (record == 0) {
+        return 0;
+    }
+    return record->vendor_id != 0u && record->vendor_id != 0xFFFFu;
+}
+
+static void pci_capture_record(uint8_t bus, uint8_t slot, uint8_t function, struct luna_pci_record *record) {
+    uint32_t id_word;
+    uint32_t class_word;
+    if (record == 0) {
+        return;
+    }
+    id_word = pci_config_read32(bus, slot, function, 0x00u);
+    class_word = pci_config_read32(bus, slot, function, 0x08u);
+    record->vendor_id = (uint16_t)(id_word & 0xFFFFu);
+    record->device_id = (uint16_t)(id_word >> 16);
+    record->bus = bus;
+    record->slot = slot;
+    record->function = function;
+    record->class_code = (uint8_t)(class_word >> 24);
+    record->subclass = (uint8_t)(class_word >> 16);
+    record->prog_if = (uint8_t)(class_word >> 8);
+    record->header_type = pci_header_type(bus, slot, function);
+    record->reserved0[0] = 0u;
+    record->reserved0[1] = 0u;
+    record->reserved0[2] = 0u;
+}
+
+static int pci_find_vendor_device_record(uint16_t vendor_id, uint16_t device_id, struct luna_pci_record *record) {
+    for (uint32_t bus = 0u; bus < 256u; ++bus) {
+        for (uint32_t slot = 0u; slot < 32u; ++slot) {
+            uint8_t function_limit = 8u;
+            for (uint32_t function = 0u; function < function_limit; ++function) {
+                uint32_t id_word;
+                uint16_t vendor;
+                uint8_t header;
+                vendor = pci_vendor_id((uint8_t)bus, (uint8_t)slot, (uint8_t)function);
+                if (vendor == 0xFFFFu) {
+                    if (function == 0u) {
+                        break;
+                    }
+                    continue;
+                }
+                header = pci_header_type((uint8_t)bus, (uint8_t)slot, (uint8_t)function);
+                if (function == 0u && (header & 0x80u) == 0u) {
+                    function_limit = 1u;
+                }
+                id_word = pci_config_read32((uint8_t)bus, (uint8_t)slot, (uint8_t)function, 0x00u);
+                if ((uint16_t)(id_word & 0xFFFFu) != vendor_id || (uint16_t)(id_word >> 16) != device_id) {
+                    continue;
+                }
+                pci_capture_record((uint8_t)bus, (uint8_t)slot, (uint8_t)function, record);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int pci_find_class_record(
+    uint8_t class_code,
+    uint8_t subclass,
+    uint8_t prog_if,
+    int require_subclass,
+    int require_prog_if,
+    struct luna_pci_record *record
+) {
+    for (uint32_t bus = 0u; bus < 256u; ++bus) {
+        for (uint32_t slot = 0u; slot < 32u; ++slot) {
+            uint8_t function_limit = 8u;
+            for (uint32_t function = 0u; function < function_limit; ++function) {
+                uint32_t class_word;
+                uint16_t vendor;
+                uint8_t header;
+                uint8_t current_subclass;
+                uint8_t current_prog_if;
+                vendor = pci_vendor_id((uint8_t)bus, (uint8_t)slot, (uint8_t)function);
+                if (vendor == 0xFFFFu) {
+                    if (function == 0u) {
+                        break;
+                    }
+                    continue;
+                }
+                header = pci_header_type((uint8_t)bus, (uint8_t)slot, (uint8_t)function);
+                if (function == 0u && (header & 0x80u) == 0u) {
+                    function_limit = 1u;
+                }
+                class_word = pci_config_read32((uint8_t)bus, (uint8_t)slot, (uint8_t)function, 0x08u);
+                if ((uint8_t)(class_word >> 24) != class_code) {
+                    continue;
+                }
+                current_subclass = (uint8_t)(class_word >> 16);
+                current_prog_if = (uint8_t)(class_word >> 8);
+                if (require_subclass && current_subclass != subclass) {
+                    continue;
+                }
+                if (require_prog_if && current_prog_if != prog_if) {
+                    continue;
+                }
+                pci_capture_record((uint8_t)bus, (uint8_t)slot, (uint8_t)function, record);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void detect_disk_pci_record(void) {
+    uint8_t bus = 0u;
+    uint8_t slot = 0u;
+    uint8_t function = 0u;
+    if (pci_record_present(&g_disk_pci)) {
+        return;
+    }
+    if (pci_find_ahci_location(&bus, &slot, &function)) {
+        pci_capture_record(bus, slot, function, &g_disk_pci);
+        return;
+    }
+    if (pci_find_class_location(0x01u, 0x01u, 0x80u, 0x8086u, 0x7010u, &bus, &slot, &function)) {
+        pci_capture_record(bus, slot, function, &g_disk_pci);
+        return;
+    }
+    (void)pci_find_class_record(0x01u, 0u, 0u, 0, 0, &g_disk_pci);
+}
+
+static void detect_serial_pci_record(void) {
+    if (pci_record_present(&g_serial_pci)) {
+        return;
+    }
+    if (pci_find_vendor_device_record(0x8086u, 0x2918u, &g_serial_pci)) {
+        return;
+    }
+    (void)pci_find_vendor_device_record(0x8086u, 0x7000u, &g_serial_pci);
+}
+
+static void detect_display_pci_record(void) {
+    if (pci_record_present(&g_display_pci)) {
+        return;
+    }
+    (void)pci_find_class_record(0x03u, 0u, 0u, 0, 0, &g_display_pci);
+}
+
+static void detect_input_pci_record(void) {
+    if (g_virtio_keyboard_ready == 0u) {
+        pci_record_clear(&g_input_pci);
+        return;
+    }
+    if (pci_record_present(&g_input_pci)
+        && g_input_pci.bus == g_virtio_kbd_bus
+        && g_input_pci.slot == g_virtio_kbd_slot
+        && g_input_pci.function == g_virtio_kbd_function) {
+        return;
+    }
+    pci_capture_record(g_virtio_kbd_bus, g_virtio_kbd_slot, g_virtio_kbd_function, &g_input_pci);
+}
+
+static void detect_net_pci_record(void) {
+    if (pci_record_present(&g_net_pci)) {
+        return;
+    }
+    if (g_net_vendor != 0u && g_net_device != 0u
+        && pci_find_vendor_device_record(g_net_vendor, g_net_device, &g_net_pci)) {
+        return;
+    }
+    if (pci_find_class_record(0x02u, 0x00u, 0u, 1, 0, &g_net_pci)) {
+        return;
+    }
+    (void)pci_find_class_record(0x02u, 0u, 0u, 0, 0, &g_net_pci);
+}
+
+static void detect_platform_pci_record(void) {
+    if (pci_record_present(&g_platform_pci)) {
+        return;
+    }
+    if (pci_find_vendor_device_record(0x8086u, 0x1237u, &g_platform_pci)) {
+        return;
+    }
+    if (pci_find_vendor_device_record(0x8086u, 0x7000u, &g_platform_pci)) {
+        return;
+    }
+    (void)pci_find_class_record(0x06u, 0x00u, 0u, 1, 0, &g_platform_pci);
+}
+
+static void serial_write_pci_record(const char *prefix, const struct luna_pci_record *record) {
+    serial_write(prefix);
+    if (!pci_record_present(record)) {
+        serial_write("none\r\n");
+        return;
+    }
+    serial_write("vendor=");
+    serial_write_hex16(record->vendor_id);
+    serial_write(" device=");
+    serial_write_hex16(record->device_id);
+    serial_write(" bdf=");
+    serial_write_hex8(record->bus);
+    serial_putc(':');
+    serial_write_hex8(record->slot);
+    serial_putc('.');
+    serial_write_hex8(record->function);
+    serial_write(" class=");
+    serial_write_hex8(record->class_code);
+    serial_putc('/');
+    serial_write_hex8(record->subclass);
+    serial_putc('/');
+    serial_write_hex8(record->prog_if);
+    serial_write(" hdr=");
+    serial_write_hex8(record->header_type);
+    serial_write("\r\n");
+}
+
+static void serial_write_serial_context(void) {
+    detect_serial_pci_record();
+    serial_write("[DEVICE] serial path driver=");
+    serial_write(serial_driver_name());
+    serial_write(" family=");
+    serial_write_hex32(serial_driver_family());
+    serial_write("\r\n");
+    serial_write("[DEVICE] serial select basis=");
+    serial_write(serial_selection_basis_name());
+    serial_write(" pci=");
+    serial_write(flag_state_name(pci_record_present(&g_serial_pci)));
+    serial_write("\r\n");
+    serial_write_pci_record("[DEVICE] serial pci ", &g_serial_pci);
 }
 
 static uintptr_t pci_find_mmio_bar(uint8_t bus, uint8_t slot, uint8_t function) {
@@ -2054,17 +2349,598 @@ static uint32_t pci_emit_scan(
 static volatile struct luna_uefi_disk_handoff *uefi_disk_handoff(void) {
     volatile struct luna_manifest *manifest =
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
-    return (volatile struct luna_uefi_disk_handoff *)(uintptr_t)(manifest->bootview_base + 0x100u);
+    return (volatile struct luna_uefi_disk_handoff *)(uintptr_t)(
+        manifest->bootview_base + LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET
+    );
+}
+
+static volatile const struct luna_bootview *device_bootview(void) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    return (volatile const struct luna_bootview *)(uintptr_t)manifest->bootview_base;
+}
+
+static int installer_target_bound(void) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    return (bootview->installer_target_flags & LUNA_INSTALL_TARGET_BOUND) != 0u;
+}
+
+static int installer_media_mode(void) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    return bootview->system_mode == LUNA_MODE_INSTALL;
+}
+
+static int fwblk_source_ready(void) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    return handoff->magic == LUNA_UEFI_DISK_MAGIC
+        && handoff->block_io_protocol != 0u
+        && handoff->read_blocks_entry != 0u;
+}
+
+static int fwblk_target_ready(void) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    return handoff->magic == LUNA_UEFI_DISK_MAGIC
+        && handoff->target_block_io_protocol != 0u
+        && handoff->target_read_blocks_entry != 0u;
+}
+
+static int fwblk_target_separate(void) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    return handoff->magic == LUNA_UEFI_DISK_MAGIC
+        && (handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE) != 0u;
+}
+
+static const char *mode_name(uint32_t mode) {
+    if (mode == LUNA_MODE_NORMAL) {
+        return "normal";
+    }
+    if (mode == LUNA_MODE_READONLY) {
+        return "readonly";
+    }
+    if (mode == LUNA_MODE_RECOVERY) {
+        return "recovery";
+    }
+    if (mode == LUNA_MODE_FATAL) {
+        return "fatal";
+    }
+    if (mode == LUNA_MODE_INSTALL) {
+        return "install";
+    }
+    return "unknown";
+}
+
+static const char *flag_state_name(int value) {
+    return value != 0 ? "ready" : "missing";
+}
+
+static const char *ps2_state_name(void) {
+    if (g_ps2_controller_known == 0u) {
+        return "unknown";
+    }
+    return g_ps2_controller_present != 0u ? "present" : "missing";
+}
+
+static const char *disk_path_chain_name(uint32_t family) {
+    if (family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+        return "fwblk>ata";
+    }
+    return "ahci>fwblk>ata";
+}
+
+static const char *disk_selection_basis_name(void) {
+    if (g_disk_driver_family == LUNA_LANE_DRIVER_AHCI) {
+        return "ahci-runtime";
+    }
+    if (g_disk_driver_family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+        if (fwblk_target_ready()) {
+            return "fwblk-target";
+        }
+        if (fwblk_source_ready()) {
+            return "fwblk-source";
+        }
+        return "fwblk-unknown";
+    }
+    if (g_disk_driver_family == LUNA_LANE_DRIVER_PCI_IDE) {
+        return "piix-ide";
+    }
+    return "ata-fallback";
+}
+
+static const char *serial_selection_basis_name(void) {
+    uint32_t family = serial_driver_family();
+    if (family == LUNA_LANE_DRIVER_ICH9_UART) {
+        return "ich9-pci";
+    }
+    if (family == LUNA_LANE_DRIVER_PIIX_UART) {
+        return "piix-pci";
+    }
+    return "legacy-uart";
+}
+
+static const char *display_selection_basis_name(void) {
+    uint32_t family = display_driver_family();
+    if (family == LUNA_LANE_DRIVER_BOOT_FRAMEBUFFER) {
+        return "gop-fb";
+    }
+    if (family == LUNA_LANE_DRIVER_QEMU_STD_VGA) {
+        if (g_display_framebuffer_base != 0u && g_display_framebuffer_size != 0u) {
+            return "std-vga-fb";
+        }
+        return "std-vga-text";
+    }
+    return "text-fallback";
+}
+
+static const char *input_selection_basis_name(void) {
+    if (g_virtio_keyboard_ready != 0u) {
+        return "virtio-kbd";
+    }
+    if (g_ps2_controller_present != 0u) {
+        return "i8042";
+    }
+    return "legacy-kbd";
+}
+
+static const char *net_selection_basis_name(void) {
+    uint32_t family = net_driver_family();
+    if (family == LUNA_LANE_DRIVER_E1000) {
+        return g_net_ready != 0u ? "e1000-ready" : "e1000-present";
+    }
+    if (family == LUNA_LANE_DRIVER_E1000E) {
+        return g_net_ready != 0u ? "e1000e-ready" : "e1000e-present";
+    }
+    return "soft-loop";
+}
+
+static const char *store_state_name(uint64_t state) {
+    if (state == LUNA_STORE_STATE_CLEAN) {
+        return "clean";
+    }
+    if (state == LUNA_STORE_STATE_DIRTY) {
+        return "dirty";
+    }
+    return "other";
+}
+
+static const char *native_profile_name(uint64_t profile) {
+    if ((uint32_t)profile == LUNA_NATIVE_PROFILE_SYSTEM) {
+        return "system";
+    }
+    if ((uint32_t)profile == LUNA_NATIVE_PROFILE_DATA) {
+        return "data";
+    }
+    return "other";
+}
+
+static const char *activation_name(uint64_t activation) {
+    if ((uint32_t)activation == LUNA_ACTIVATION_EMPTY) {
+        return "empty";
+    }
+    if ((uint32_t)activation == LUNA_ACTIVATION_PROVISIONED) {
+        return "provisioned";
+    }
+    if ((uint32_t)activation == LUNA_ACTIVATION_COMMITTED) {
+        return "committed";
+    }
+    if ((uint32_t)activation == LUNA_ACTIVATION_ACTIVE) {
+        return "active";
+    }
+    if ((uint32_t)activation == LUNA_ACTIVATION_RECOVERY) {
+        return "recovery";
+    }
+    return "other";
+}
+
+static const char *disk_region_name(uint32_t lba) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    uint32_t system_base = (uint32_t)bootview->system_store_lba;
+    uint32_t data_base = (uint32_t)bootview->data_store_lba;
+    uint32_t metadata_span = LUNA_NATIVE_LAYOUT_RECORD_SECTORS - LUNA_NATIVE_LAYOUT_TXN_SECTORS;
+    uint32_t system_txn_log = system_base + 1u + metadata_span;
+    uint32_t system_txn_aux = system_txn_log + 1u;
+    uint32_t system_data_start = system_base + 1u + LUNA_NATIVE_LAYOUT_RECORD_SECTORS;
+    uint32_t data_txn_log = data_base + 1u + metadata_span;
+    uint32_t data_txn_aux = data_txn_log + 1u;
+    uint32_t data_start = data_base + 1u + LUNA_NATIVE_LAYOUT_RECORD_SECTORS;
+
+    if (lba == system_base) {
+        return "lsys-super";
+    }
+    if (lba >= system_base + 1u && lba < system_txn_log) {
+        return "lsys-object-records";
+    }
+    if (lba == system_txn_log) {
+        return "lsys-txn-log";
+    }
+    if (lba == system_txn_aux) {
+        return "lsys-txn-aux";
+    }
+    if (lba >= system_data_start && lba < data_base) {
+        return "lsys-object-slots";
+    }
+    if (lba == data_base) {
+        return "ldat-super";
+    }
+    if (lba >= data_base + 1u && lba < data_txn_log) {
+        return "ldat-object-records";
+    }
+    if (lba == data_txn_log) {
+        return "ldat-txn-log";
+    }
+    if (lba == data_txn_aux) {
+        return "ldat-txn-aux";
+    }
+    if (lba >= data_start) {
+        return "ldat-object-slots";
+    }
+    return "unmapped";
+}
+
+static void serial_write_store_super_context(uint32_t lba, const uint8_t *src) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    const struct luna_store_superblock *super = (const struct luna_store_superblock *)src;
+
+    if (src == 0) {
+        return;
+    }
+    if (lba != (uint32_t)bootview->system_store_lba && lba != (uint32_t)bootview->data_store_lba) {
+        return;
+    }
+
+    serial_write("[DISK] super checkpoint=");
+    serial_write(store_state_name(super->reserved[0]));
+    serial_write(" profile=");
+    serial_write(native_profile_name(super->reserved[6]));
+    serial_write(" activation=");
+    serial_write(activation_name(super->reserved[9]));
+    serial_write(" mode=");
+    serial_write(mode_name((uint32_t)super->reserved[5]));
+    serial_write("\r\n");
+
+    serial_write("[DISK] super nonce=");
+    serial_write_hex64(super->next_nonce);
+    serial_write(" mounts=");
+    serial_write_hex64(super->mount_count);
+    serial_write(" formats=");
+    serial_write_hex64(super->format_count);
+    serial_write(" peer=");
+    serial_write_hex64(super->reserved[10]);
+    serial_write("\r\n");
+}
+
+static void ata_log_fail(const char *phase, const char *op, uint32_t lba) {
+    uint8_t status = inb(0x1F7);
+    uint8_t error = inb(0x1F1);
+    uint8_t sector_count = inb(0x1F2);
+    uint8_t lba0 = inb(0x1F3);
+    uint8_t lba1 = inb(0x1F4);
+    uint8_t lba2 = inb(0x1F5);
+    uint8_t dev = inb(0x1F6);
+    serial_write("[ATA] ");
+    serial_write(phase);
+    serial_write(" fail op=");
+    serial_write(op);
+    serial_write(" lba=");
+    serial_write_hex32(lba);
+    serial_write(" st=");
+    serial_write_hex8(status);
+    serial_write(" err=");
+    serial_write_hex8(error);
+    serial_write(" sc=");
+    serial_write_hex8(sector_count);
+    serial_write(" tf=");
+    serial_write_hex8(dev);
+    serial_putc(':');
+    serial_write_hex8(lba2);
+    serial_putc(':');
+    serial_write_hex8(lba1);
+    serial_putc(':');
+    serial_write_hex8(lba0);
+    serial_write(" region=");
+    serial_write(disk_region_name(lba));
+    serial_write("\r\n");
+}
+
+struct ata_wait_diag {
+    uint32_t loops;
+    uint8_t last_status;
+    uint8_t saw_bsy_clear;
+    uint8_t saw_drq_clear;
+    uint8_t saw_error;
+    uint8_t saw_df;
+};
+
+static void ata_wait_diag_reset(struct ata_wait_diag *diag) {
+    if (diag == 0) {
+        return;
+    }
+    zero_bytes(diag, sizeof(*diag));
+}
+
+static void ata_wait_diag_record(struct ata_wait_diag *diag, uint8_t status, uint32_t loops) {
+    if (diag == 0) {
+        return;
+    }
+    diag->loops = loops;
+    diag->last_status = status;
+    if ((status & 0x80u) == 0u) {
+        diag->saw_bsy_clear = 1u;
+    }
+    if ((status & 0x08u) == 0u) {
+        diag->saw_drq_clear = 1u;
+    }
+    if ((status & 0x01u) != 0u) {
+        diag->saw_error = 1u;
+    }
+    if ((status & 0x20u) != 0u) {
+        diag->saw_df = 1u;
+    }
+}
+
+static void ata_log_fail_detail(const char *phase, const char *op, uint32_t lba, const struct ata_wait_diag *diag) {
+    ata_log_fail(phase, op, lba);
+    if (diag == 0) {
+        return;
+    }
+    serial_write("[ATA] poll loops=");
+    serial_write_hex32(diag->loops);
+    serial_write(" last=");
+    serial_write_hex8(diag->last_status);
+    serial_write(" bsy-clear=");
+    serial_write(flag_state_name(diag->saw_bsy_clear != 0u));
+    serial_write(" drq-clear=");
+    serial_write(flag_state_name(diag->saw_drq_clear != 0u));
+    serial_write(" err-seen=");
+    serial_write(flag_state_name(diag->saw_error != 0u));
+    serial_write(" df-seen=");
+    serial_write(flag_state_name(diag->saw_df != 0u));
+    serial_write("\r\n");
+}
+
+static void serial_write_fwblk_context(void) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    volatile const struct luna_bootview *bootview = device_bootview();
+    int source_ready = fwblk_source_ready();
+    int target_ready = fwblk_target_ready();
+
+    serial_write("[DEVICE] fwblk source=");
+    serial_write(flag_state_name(source_ready));
+    serial_write(" target=");
+    serial_write(flag_state_name(target_ready));
+    serial_write(" flags=");
+    serial_write_hex64(handoff->flags);
+    serial_write(" diag=");
+    serial_write_hex64(handoff->diag_status);
+    serial_write(" mode=");
+    serial_write(mode_name(bootview->system_mode));
+    serial_write("\r\n");
+    serial_write("[DEVICE] fwblk media src=");
+    serial_write_hex64(handoff->media_id);
+    serial_write(" tgt=");
+    serial_write_hex64(handoff->target_media_id);
+    serial_write(" install=");
+    serial_write(installer_media_mode() ? "media" : "runtime");
+    serial_write(" bound=");
+    serial_write(installer_target_bound() ? "yes" : "no");
+    serial_write("\r\n");
+}
+
+static void serial_write_disk_layout_context(void) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    serial_write("[DEVICE] disk layout lsys=");
+    serial_write_hex32((uint32_t)bootview->system_store_lba);
+    serial_write(" ldat=");
+    serial_write_hex32((uint32_t)bootview->data_store_lba);
+    serial_write(" target=");
+    serial_write_hex64(bootview->installer_target_flags);
+    serial_write("\r\n");
+}
+
+static void serial_write_disk_path_context(void) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    uint32_t family = disk_driver_family();
+    detect_disk_pci_record();
+    serial_write("[DEVICE] disk path driver=");
+    serial_write(disk_driver_name());
+    serial_write(" family=");
+    serial_write_hex32(family);
+    serial_write(" chain=");
+    serial_write(disk_path_chain_name(family));
+    serial_write(" mode=");
+    serial_write(mode_name(bootview->system_mode));
+    serial_write("\r\n");
+    serial_write("[DEVICE] disk select basis=");
+    serial_write(disk_selection_basis_name());
+    serial_write(" fwblk-src=");
+    serial_write(flag_state_name(fwblk_source_ready()));
+    serial_write(" fwblk-tgt=");
+    serial_write(flag_state_name(fwblk_target_ready()));
+    serial_write(" separate=");
+    serial_write(flag_state_name(fwblk_target_separate()));
+    serial_write(" ahci=");
+    serial_write(flag_state_name(g_ahci_ready != 0u));
+    serial_write(" pci=");
+    serial_write(flag_state_name(pci_record_present(&g_disk_pci)));
+    serial_write("\r\n");
+    serial_write_pci_record("[DEVICE] disk pci ", &g_disk_pci);
+    if (family == LUNA_LANE_DRIVER_AHCI) {
+        serial_write("[DEVICE] disk ahci port=");
+        serial_write_hex8(g_ahci_port);
+        serial_write(" abar=");
+        serial_write_hex64((uint64_t)g_ahci_abar);
+        serial_write("\r\n");
+    }
+}
+
+static void serial_write_display_context(void) {
+    detect_display_pci_record();
+    serial_write("[DEVICE] display path driver=");
+    serial_write(display_driver_name());
+    serial_write(" family=");
+    serial_write_hex32(display_driver_family());
+    serial_write(" fb=");
+    serial_write(flag_state_name(g_display_framebuffer_base != 0u && g_display_framebuffer_size != 0u));
+    serial_write(" size=");
+    serial_write_hex64(g_display_framebuffer_size);
+    serial_write(" w=");
+    serial_write_hex32(g_display_framebuffer_width);
+    serial_write(" h=");
+    serial_write_hex32(g_display_framebuffer_height);
+    serial_write(" stride=");
+    serial_write_hex32(g_display_framebuffer_stride);
+    serial_write(" fmt=");
+    serial_write_hex32(g_display_framebuffer_format);
+    serial_write("\r\n");
+    serial_write("[DEVICE] display select basis=");
+    serial_write(display_selection_basis_name());
+    serial_write(" gop=");
+    serial_write(flag_state_name(g_display_framebuffer_base != 0u && g_display_framebuffer_size != 0u));
+    serial_write(" pci=");
+    serial_write(flag_state_name(pci_record_present(&g_display_pci)));
+    serial_write("\r\n");
+    serial_write_pci_record("[DEVICE] display pci ", &g_display_pci);
+}
+
+static void serial_write_input_context(int input_ready) {
+    detect_input_pci_record();
+    serial_write("[DEVICE] input path kbd=");
+    serial_write(input_driver_name(keyboard_driver_family()));
+    serial_write(" ptr=");
+    serial_write(input_driver_name(pointer_driver_family()));
+    serial_write(" virtio=");
+    serial_write(flag_state_name(g_virtio_keyboard_ready != 0u));
+    serial_write(" ps2=");
+    serial_write(ps2_state_name());
+    serial_write(" lane=");
+    serial_write(input_ready != 0 ? "ready" : "offline");
+    serial_write("\r\n");
+    serial_write("[DEVICE] input select basis=");
+    serial_write(input_selection_basis_name());
+    serial_write(" virtio-dev=");
+    serial_write(flag_state_name(pci_find_class_device(0x09u, 0x00u, 0x00u, 0x1AF4u, 0x1052u)));
+    serial_write(" virtio-ready=");
+    serial_write(flag_state_name(g_virtio_keyboard_ready != 0u));
+    serial_write(" legacy=");
+    serial_write(flag_state_name(g_ps2_controller_present != 0u));
+    serial_write("\r\n");
+    if (pci_record_present(&g_input_pci)) {
+        serial_write_pci_record("[DEVICE] input pci ", &g_input_pci);
+    } else {
+        serial_write("[DEVICE] input ctrl legacy=i8042\r\n");
+    }
+}
+
+static void serial_write_network_context(void) {
+    detect_net_pci_record();
+    serial_write("[DEVICE] net path driver=");
+    serial_write(net_driver_name());
+    serial_write(" family=");
+    serial_write_hex32(net_driver_family());
+    serial_write(" lane=");
+    serial_write(g_net_ready != 0u ? "ready" : "fallback");
+    serial_write(" mmio=");
+    serial_write_hex64((uint64_t)g_net_mmio);
+    serial_write("\r\n");
+    serial_write("[DEVICE] net select basis=");
+    serial_write(net_selection_basis_name());
+    serial_write(" pci=");
+    serial_write(flag_state_name(pci_record_present(&g_net_pci)));
+    serial_write(" live=");
+    serial_write(flag_state_name(g_net_ready != 0u));
+    serial_write("\r\n");
+    serial_write_pci_record("[DEVICE] net pci ", &g_net_pci);
+}
+
+static void serial_write_platform_context(void) {
+    detect_platform_pci_record();
+    serial_write_pci_record("[DEVICE] platform pci ", &g_platform_pci);
 }
 
 static int firmware_read_sector(uint32_t lba, uint8_t *out) {
     volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    static uint8_t g_firmware_read_diag_once = 0u;
+    uint64_t status = 0u;
     if (handoff->magic != LUNA_UEFI_DISK_MAGIC || handoff->read_blocks_entry == 0u || handoff->block_io_protocol == 0u) {
+        if (g_firmware_read_diag_once == 0u) {
+            g_firmware_read_diag_once = 1u;
+            serial_write("[FWBLK] handoff missing\r\n");
+            if (handoff->magic == LUNA_UEFI_DISK_MAGIC && handoff->version >= 2u) {
+                serial_write("[FWBLK] diag status=");
+                serial_write_hex64(handoff->diag_status);
+                serial_write(" handles=");
+                serial_write_hex64(handoff->diag_handle_count);
+                serial_write(" full=");
+                serial_write_hex64(handoff->diag_full_disk_seen);
+                serial_write("\r\n");
+            }
+        }
         return 0;
     }
-    if (((efi_block_rw_fn_t)(uintptr_t)handoff->read_blocks_entry)(
+    status = ((efi_block_rw_fn_t)(uintptr_t)handoff->read_blocks_entry)(
         (void *)(uintptr_t)handoff->block_io_protocol,
         (uint32_t)handoff->media_id,
+        lba,
+        512u,
+        g_firmware_disk_sector
+    );
+    if (status != 0u) {
+        if (g_firmware_read_diag_once == 0u) {
+            g_firmware_read_diag_once = 1u;
+            serial_write("[FWBLK] read fail lba=");
+            serial_write_hex32(lba);
+            serial_write(" status=");
+            serial_write_hex64(status);
+            serial_write("\r\n");
+        }
+        return 0;
+    }
+    copy_bytes(out, g_firmware_disk_sector, 512u);
+    return 1;
+}
+
+static int firmware_write_sector(uint32_t lba, const uint8_t *src) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    uint64_t block_io_protocol;
+    uint64_t media_id;
+    uint64_t write_blocks_entry;
+    if (handoff->magic != LUNA_UEFI_DISK_MAGIC) {
+        return 0;
+    }
+    if (handoff->target_block_io_protocol != 0u && handoff->target_write_blocks_entry != 0u) {
+        block_io_protocol = handoff->target_block_io_protocol;
+        media_id = handoff->target_media_id;
+        write_blocks_entry = handoff->target_write_blocks_entry;
+    } else {
+        block_io_protocol = handoff->block_io_protocol;
+        media_id = handoff->media_id;
+        write_blocks_entry = handoff->write_blocks_entry;
+    }
+    if (write_blocks_entry == 0u || block_io_protocol == 0u) {
+        return 0;
+    }
+    copy_bytes(g_firmware_disk_sector, src, 512u);
+    if (((efi_block_rw_fn_t)(uintptr_t)write_blocks_entry)(
+        (void *)(uintptr_t)block_io_protocol,
+        (uint32_t)media_id,
+        lba,
+        512u,
+        g_firmware_disk_sector
+    ) == 0u) {
+        return 1;
+    }
+    return 0;
+}
+
+static int firmware_read_target_sector(uint32_t lba, uint8_t *out) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    if (handoff->magic != LUNA_UEFI_DISK_MAGIC
+        || handoff->target_read_blocks_entry == 0u
+        || handoff->target_block_io_protocol == 0u) {
+        return 0;
+    }
+    if (((efi_block_rw_fn_t)(uintptr_t)handoff->target_read_blocks_entry)(
+        (void *)(uintptr_t)handoff->target_block_io_protocol,
+        (uint32_t)handoff->target_media_id,
         lba,
         512u,
         g_firmware_disk_sector
@@ -2075,20 +2951,49 @@ static int firmware_read_sector(uint32_t lba, uint8_t *out) {
     return 1;
 }
 
-static int firmware_write_sector(uint32_t lba, const uint8_t *src) {
+static int firmware_write_target_sector(uint32_t lba, const uint8_t *src) {
     volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
-    if (handoff->magic != LUNA_UEFI_DISK_MAGIC || handoff->write_blocks_entry == 0u || handoff->block_io_protocol == 0u) {
+    static uint8_t g_firmware_target_write_diag_once = 0u;
+    uint64_t status = 0u;
+    if (handoff->magic != LUNA_UEFI_DISK_MAGIC
+        || handoff->target_write_blocks_entry == 0u
+        || handoff->target_block_io_protocol == 0u) {
+        if (g_firmware_target_write_diag_once == 0u) {
+            g_firmware_target_write_diag_once = 1u;
+            serial_write("[FWBLK] target write handoff miss lba=");
+            serial_write_hex32(lba);
+            serial_write(" magic=");
+            serial_write_hex32(handoff->magic);
+            serial_write(" entry=");
+            serial_write_hex64(handoff->target_write_blocks_entry);
+            serial_write(" proto=");
+            serial_write_hex64(handoff->target_block_io_protocol);
+            serial_write("\r\n");
+        }
         return 0;
     }
     copy_bytes(g_firmware_disk_sector, src, 512u);
-    if (((efi_block_rw_fn_t)(uintptr_t)handoff->write_blocks_entry)(
-        (void *)(uintptr_t)handoff->block_io_protocol,
-        (uint32_t)handoff->media_id,
+    status = ((efi_block_rw_fn_t)(uintptr_t)handoff->target_write_blocks_entry)(
+        (void *)(uintptr_t)handoff->target_block_io_protocol,
+        (uint32_t)handoff->target_media_id,
         lba,
         512u,
         g_firmware_disk_sector
-    ) == 0u) {
+    );
+    if (status == 0u) {
         return 1;
+    }
+    if (g_firmware_target_write_diag_once == 0u) {
+        g_firmware_target_write_diag_once = 1u;
+        serial_write("[FWBLK] target write fail lba=");
+        serial_write_hex32(lba);
+        serial_write(" status=");
+        serial_write_hex64(status);
+        serial_write(" media=");
+        serial_write_hex64(handoff->target_media_id);
+        serial_write(" flags=");
+        serial_write_hex64(handoff->flags);
+        serial_write("\r\n");
     }
     return 0;
 }
@@ -2116,6 +3021,51 @@ static int ata_wait_idle(void) {
     return 0;
 }
 
+static int ata_wait_not_busy_detail(struct ata_wait_diag *diag) {
+    ata_wait_diag_reset(diag);
+    for (uint32_t loops = 0; loops < 1000000u; ++loops) {
+        uint8_t status = inb(0x1F7);
+        ata_wait_diag_record(diag, status, loops);
+        if ((status & (0x01u | 0x20u)) != 0u) {
+            return -1;
+        }
+        if ((status & 0x80u) == 0u) {
+            return 1;
+        }
+        io_delay();
+    }
+    return 0;
+}
+
+static int ata_wait_flush_status_clear(struct ata_wait_diag *diag) {
+    ata_wait_diag_reset(diag);
+    for (uint32_t loops = 0; loops < 1000000u; ++loops) {
+        uint8_t status = inb(0x1F7);
+        ata_wait_diag_record(diag, status, loops);
+        if ((status & (0x01u | 0x20u)) != 0u) {
+            return -1;
+        }
+        if ((status & (0x80u | 0x08u)) == 0u) {
+            return 1;
+        }
+        io_delay();
+    }
+    return 0;
+}
+
+static int ata_wait_write_data_complete(void) {
+    for (uint32_t loops = 0; loops < 100000u; ++loops) {
+        uint8_t status = inb(0x1F7);
+        if ((status & 0x01u) != 0u || (status & 0x20u) != 0u) {
+            return 0;
+        }
+        if ((status & 0x80u) == 0u && (status & 0x08u) == 0u) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void ata_select(uint32_t lba, uint8_t sector_count, uint8_t command) {
     outb(0x1F6, (uint8_t)(0xE0u | ((lba >> 24) & 0x0Fu)));
     outb(0x1F2, sector_count);
@@ -2129,6 +3079,7 @@ static void ata_select(uint32_t lba, uint8_t sector_count, uint8_t command) {
 static int ata_read_sector(uint32_t lba, uint8_t *out) {
     ata_select(lba, 1u, 0x20u);
     if (!ata_wait_ready()) {
+        ata_log_fail("ready", "read", lba);
         return 0;
     }
     for (size_t i = 0; i < 256u; ++i) {
@@ -2136,12 +3087,18 @@ static int ata_read_sector(uint32_t lba, uint8_t *out) {
         out[i * 2u] = (uint8_t)(word & 0xFFu);
         out[i * 2u + 1u] = (uint8_t)(word >> 8);
     }
-    return ata_wait_idle();
+    if (!ata_wait_idle()) {
+        ata_log_fail("idle", "read", lba);
+        return 0;
+    }
+    return 1;
 }
 
 static int ata_write_sector(uint32_t lba, const uint8_t *src) {
+    struct ata_wait_diag flush_diag;
     ata_select(lba, 1u, 0x30u);
     if (!ata_wait_ready()) {
+        ata_log_fail("ready", "write", lba);
         return 0;
     }
     for (size_t i = 0; i < 256u; ++i) {
@@ -2149,8 +3106,34 @@ static int ata_write_sector(uint32_t lba, const uint8_t *src) {
         uint16_t hi = src[i * 2u + 1u];
         outw(0x1F0, (uint16_t)(lo | (hi << 8)));
     }
+    if (!ata_wait_write_data_complete()) {
+        ata_log_fail("data-complete", "write", lba);
+        return 0;
+    }
     outb(0x1F7, 0xE7u);
+    io_delay();
+    switch (ata_wait_not_busy_detail(&flush_diag)) {
+        case 1:
+            break;
+        case -1:
+            ata_log_fail_detail("cache-flush", "write", lba, &flush_diag);
+            return 0;
+        default:
+            ata_log_fail_detail("completion-poll", "write", lba, &flush_diag);
+            return 0;
+    }
+    switch (ata_wait_flush_status_clear(&flush_diag)) {
+        case 1:
+            break;
+        case -1:
+            ata_log_fail_detail("status-clear", "write", lba, &flush_diag);
+            return 0;
+        default:
+            ata_log_fail_detail("status-clear", "write", lba, &flush_diag);
+            return 0;
+    }
     if (!ata_wait_idle()) {
+        ata_log_fail("post-write-idle", "write", lba);
         return 0;
     }
     return 1;
@@ -2592,21 +3575,59 @@ static int ahci_write_sector(uint32_t lba, const uint8_t *src) {
 }
 
 static int disk_write_sector(uint32_t lba, const uint8_t *src) {
-    if (g_ahci_ready == 0u) {
+    volatile struct luna_uefi_disk_handoff *handoff = uefi_disk_handoff();
+    uint32_t family = g_disk_driver_family;
+    if (handoff->magic == LUNA_UEFI_DISK_MAGIC
+        && (handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_PRESENT) != 0u
+        && (handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE) != 0u
+        && (((handoff->flags & (
+                LUNA_UEFI_DISK_FLAG_SOURCE_REMOVABLE |
+                LUNA_UEFI_DISK_FLAG_SOURCE_READ_ONLY |
+                LUNA_UEFI_DISK_FLAG_SOURCE_LOGICAL_PARTITION
+            )) != 0u)
+            || handoff->block_io_protocol == 0u
+            || handoff->read_blocks_entry == 0u
+            || handoff->diag_status != 0u)) {
+        return 0;
+    }
+    /* Keep the runtime disk path consistent with the boot-selected driver.
+       VMware currently boots through firmware block I/O; lazy AHCI promotion
+       during the first persistent write causes later reads to diverge. */
+    if (family != LUNA_LANE_DRIVER_UEFI_BLOCK_IO && g_ahci_ready == 0u) {
         ahci_init();
     }
-    if (ahci_write_sector(lba, src)) {
-        return 1;
-    }
-    if (firmware_write_sector(lba, src)) {
-        return 1;
-    }
-    if (ata_write_sector(lba, src)) {
-        return 1;
+    if (family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+        if (firmware_write_sector(lba, src)) {
+            return 1;
+        }
+        if (ata_write_sector(lba, src)) {
+            return 1;
+        }
+    } else {
+        if (ahci_write_sector(lba, src)) {
+            return 1;
+        }
+        if (firmware_write_sector(lba, src)) {
+            return 1;
+        }
+        if (ata_write_sector(lba, src)) {
+            return 1;
+        }
     }
     serial_write("[DISK] write fail lba=");
     serial_write_hex32(lba);
+    serial_write(" driver=");
+    serial_write(disk_driver_name());
+    serial_write(" family=");
+    serial_write_hex32(disk_driver_family());
+    serial_write(" chain=");
+    serial_write(disk_path_chain_name(family));
+    serial_write(" region=");
+    serial_write(disk_region_name(lba));
+    serial_write(" mode=");
+    serial_write(mode_name(device_bootview()->system_mode));
     serial_write("\r\n");
+    serial_write_store_super_context(lba, src);
     return 0;
 }
 
@@ -2761,14 +3782,18 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
     if (ahci_init()) {
         g_disk_driver_family = LUNA_LANE_DRIVER_AHCI;
     } else if (handoff->magic == LUNA_UEFI_DISK_MAGIC
-        && handoff->block_io_protocol != 0u
-        && handoff->read_blocks_entry != 0u) {
+        && ((handoff->block_io_protocol != 0u && handoff->read_blocks_entry != 0u) ||
+            (handoff->target_block_io_protocol != 0u && handoff->target_read_blocks_entry != 0u))) {
         g_disk_driver_family = LUNA_LANE_DRIVER_UEFI_BLOCK_IO;
     } else if (pci_find_class_device(0x01u, 0x01u, 0x80u, 0x8086u, 0x7010u)) {
         g_disk_driver_family = LUNA_LANE_DRIVER_PCI_IDE;
     } else {
         g_disk_driver_family = LUNA_LANE_DRIVER_ATA_PIO;
     }
+    serial_write_fwblk_context();
+    serial_write_disk_layout_context();
+    serial_write_disk_path_context();
+    serial_write_serial_context();
     if (intel_net_init()) {
     } else if (pci_find_class_device(0x02u, 0x00u, 0x00u, 0x8086u, 0x100Eu)) {
         g_net_driver_family = LUNA_LANE_DRIVER_E1000;
@@ -2788,11 +3813,10 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
     if (mouse_init()) {
         input_ready = 1;
     }
-    if (input_ready != 0) {
-        serial_write("[DEVICE] input ready\r\n");
-    } else {
-        serial_write("[DEVICE] input offline\r\n");
-    }
+    serial_write_display_context();
+    serial_write_input_context(input_ready);
+    serial_write_network_context();
+    serial_write_platform_context();
     (void)request_capability(LUNA_CAP_OBSERVE_LOG, &g_observe_log_cid);
     g_observe_logging_enabled = 0u;
     (void)request_capability(LUNA_CAP_DATA_SEED, &g_data_seed_cid);
@@ -3084,6 +4108,15 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             gate->status = LUNA_DEVICE_OK;
             return;
         }
+        if (gate->device_id == LUNA_DEVICE_ID_DISK1
+            && installer_target_bound()
+            && gate->buffer_size >= 512u
+            && (ahci_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr)
+                || firmware_read_target_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr))) {
+            gate->size = 512u;
+            gate->status = LUNA_DEVICE_OK;
+            return;
+        }
         if (gate->device_id == LUNA_DEVICE_ID_DISPLAY0 && gate->buffer_size >= sizeof(struct luna_display_info)) {
             struct luna_display_info *info = (struct luna_display_info *)(uintptr_t)gate->buffer_addr;
             info->framebuffer_base = g_display_framebuffer_base;
@@ -3268,10 +4301,27 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_DISK0
+            && installer_media_mode()
+            && gate->buffer_size >= 512u
+            && firmware_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr)) {
+            gate->size = 512u;
+            gate->status = LUNA_DEVICE_OK;
+            return;
+        }
+        if (gate->device_id == LUNA_DEVICE_ID_DISK0
             && gate->buffer_size >= 512u
             && (ahci_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr)
                 || firmware_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr)
                 || ata_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr))) {
+            gate->size = 512u;
+            gate->status = LUNA_DEVICE_OK;
+            return;
+        }
+        if (gate->device_id == LUNA_DEVICE_ID_DISK1
+            && installer_target_bound()
+            && gate->buffer_size >= 512u
+            && (ahci_read_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr)
+                || firmware_read_target_sector(gate->flags, (uint8_t *)(uintptr_t)gate->buffer_addr))) {
             gate->size = 512u;
             gate->status = LUNA_DEVICE_OK;
             return;
@@ -3282,7 +4332,25 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
     }
     if (gate->opcode == LUNA_DEVICE_BLOCK_WRITE) {
         const uint8_t *src = (const uint8_t *)(uintptr_t)gate->buffer_addr;
-        if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_WRITE)) {
+        if (gate->device_id == LUNA_DEVICE_ID_DISK1) {
+            if (!installer_target_bound()
+                || !allow_device_call(
+                    LUNA_CAP_DEVICE_WRITE,
+                    gate->cid_low,
+                    gate->cid_high,
+                    LUNA_DEVICE_BLOCK_WRITE_INSTALL_TARGET
+                )) {
+                return;
+            }
+        } else if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_WRITE)) {
+            return;
+        }
+        if (gate->device_id == LUNA_DEVICE_ID_DISK1
+            && gate->buffer_size >= 512u
+            && gate->size >= 512u
+            && (ahci_write_sector(gate->flags, src)
+                || firmware_write_target_sector(gate->flags, src))) {
+            gate->status = LUNA_DEVICE_OK;
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_DISK0
@@ -3291,6 +4359,13 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             && disk_write_sector(gate->flags, src)) {
             gate->status = LUNA_DEVICE_OK;
             return;
+        }
+        if (gate->device_id == LUNA_DEVICE_ID_DISK1) {
+            serial_write("[INSTALLER] target write path fail lba=");
+            serial_write_hex32(gate->flags);
+            serial_write(" first=");
+            serial_write_hex32(*(const uint32_t *)src);
+            serial_write("\r\n");
         }
         observe_log(3u, "device.block.write err");
         gate->status = LUNA_DEVICE_ERR_NOT_FOUND;

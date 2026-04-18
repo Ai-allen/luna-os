@@ -286,20 +286,6 @@ void draw_window_contents(const struct luna_window_record *window) {
         draw_window_content_chrome(window);
     }
 
-    if (title_equals(window->title, "Files")) {
-        uint32_t rows = body_height > 8u ? 4u : (body_height > 4u ? 3u : 2u);
-        uint32_t row_y = body_y + 2u;
-        for (uint32_t i = 0; i < rows && row_y + 1u < body_y + body_height; ++i) {
-            draw_text(body_x + 2u, row_y, shell_panel_attr(), i == 0u ? "object 0" : (i == 1u ? "object 1" : (i == 2u ? "object 2" : "object 3")));
-            row_y += 2u;
-        }
-        return;
-    }
-    if (title_equals(window->title, "Notes")) {
-        draw_text(body_x + 2u, body_y + 2u, shell_panel_attr(), "workspace note");
-        draw_text(body_x + 2u, body_y + 4u, shell_accent_attr(), "pin to desktop");
-        return;
-    }
     if (title_equals(window->title, "Console")) {
         draw_text(body_x + 2u, body_y + 2u, shell_panel_attr(), "session console");
         draw_text(body_x + 2u, body_y + 4u, shell_accent_attr(), "theme / control");

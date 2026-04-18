@@ -42,7 +42,21 @@ try {
     if ($proc.HasExited) { break }
     if (Test-Path $stdoutPath) {
       $text = Get-Content $stdoutPath -Raw
-      if ($text -match '\[USER\] shell ready' -and $text -match '\[USER\] input lane ready') {
+      if ($text -match '\[LunaLoader\] Stage 1 plan chunks=[0-9A-F]{4} total_bytes=0x[0-9A-F]{8} entry=0x[0-9A-F]{8}' `
+          -and $text -match '\[LunaLoader\] Stage 1 read chunk=0001/[0-9A-F]{4} offset=0x00000000 size=0x[0-9A-F]{8} total=0x[0-9A-F]{8} final=(yes|no) lba=0x[0-9A-F]{8}' `
+          -and $text -match '\[LunaLoader\] Stage 1 copy chunk=0001/[0-9A-F]{4} offset=0x00000000 size=0x[0-9A-F]{8} total=0x[0-9A-F]{8} final=(yes|no) dest=0x[0-9A-F]{8}' `
+          -and $text -match '\[LunaLoader\] Stage 2 loaded ok chunks=[0-9A-F]{4}/[0-9A-F]{4} total_bytes=0x[0-9A-F]{8} entry=0x[0-9A-F]{8}' `
+          -and $text -match '\[USER\] shell ready' `
+          -and $text -match '\[USER\] input lane ready' `
+          -and $text -match '\[DEVICE\] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=normal' `
+          -and $text -match '\[DEVICE\] disk select basis=piix-ide fwblk-src=missing fwblk-tgt=missing separate=missing ahci=missing pci=ready' `
+          -and $text -match '\[DEVICE\] serial path driver=piix-uart family=00000012' `
+          -and $text -match '\[DEVICE\] serial select basis=piix-pci pci=ready' `
+          -and $text -match '\[DEVICE\] display select basis=std-vga-text gop=missing pci=ready' `
+          -and $text -match '\[DEVICE\] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready' `
+          -and $text -match '\[DEVICE\] net path driver=e1000 family=0000000B lane=ready' `
+          -and $text -match '\[DEVICE\] net select basis=e1000-ready pci=ready live=ready' `
+          -and $text -match '\[DEVICE\] platform pci vendor=8086 device=1237 bdf=00:00.00 class=06/00/00 hdr=00') {
         $matched = $true
         break
       }

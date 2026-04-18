@@ -70,79 +70,37 @@ def main() -> int:
     commands = (
         b"setup.init luna dev secret\r\n"
         b"desktop.boot\r\n"
-        b"desktop.window\r\n"
-        b"desktop.focus\r\n"
-        b"desktop.window\r\n"
-        b"desktop.status\r\n"
-        b"desktop.pointer 8 17\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.window\r\n"
-        b"desktop.status\r\n"
-        b"desktop.pointer 4 24\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.status\r\n"
-        b"desktop.launch Guard\r\n"
-        b"desktop.window\r\n"
-        b"desktop.pointer 61 7\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.status\r\n"
-        b"desktop.pointer 69 7\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
+        b"desktop.menu\r\n"
         b"desktop.status\r\n"
         b"desktop.launch Settings\r\n"
-        b"desktop.status\r\n"
+        b"desktop.window\r\n"
         b"desktop.settings\r\n"
         b"desktop.status\r\n"
-        b"desktop.window\r\n"
-        b"desktop.minimize\r\n"
-        b"desktop.window\r\n"
-        b"desktop.maximize\r\n"
-        b"desktop.window\r\n"
-        b"desktop.pointer 4 10\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.window\r\n"
-        b"desktop.control\r\n"
-        b"desktop.theme\r\n"
-        b"desktop.launch Notes\r\n"
-        b"desktop.note workspace draft\r\n"
-        b"desktop.window\r\n"
-        b"desktop.pointer 46 7\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.window\r\n"
-        b"desktop.status\r\n"
-        b"desktop.launch Files\r\n"
-        b"desktop.window\r\n"
-        b"desktop.launch Console\r\n"
-        b"desktop.window\r\n"
         b"desktop.launch Files\r\n"
         b"desktop.window\r\n"
         b"desktop.files.next\r\n"
         b"desktop.files.open\r\n"
         b"desktop.status\r\n"
+        b"desktop.launch Notes\r\n"
+        b"desktop.note workspace draft\r\n"
+        b"desktop.window\r\n"
+        b"desktop.status\r\n"
+        b"desktop.launch Console\r\n"
+        b"desktop.window\r\n"
+        b"desktop.focus\r\n"
+        b"desktop.window\r\n"
+        b"desktop.window\r\n"
+        b"desktop.minimize\r\n"
+        b"desktop.window\r\n"
+        b"desktop.focus\r\n"
+        b"desktop.window\r\n"
+        b"desktop.maximize\r\n"
+        b"desktop.window\r\n"
         b"desktop.control\r\n"
-        b"desktop.pointer 78 24\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
+        b"desktop.theme\r\n"
         b"desktop.status\r\n"
-        b"desktop.pointer 60 16\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.status\r\n"
-        b"desktop.pointer 60 13\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.status\r\n"
-        b"desktop.pointer 16 12\r\n"
-        b"desktop.hit\r\n"
-        b"desktop.click\r\n"
-        b"desktop.status\r\n"
-        b"desktop.control\r\n"
+        b"desktop.close\r\n"
+        b"desktop.window\r\n"
         b"desktop.status\r\n"
     )
     patch_session_script(commands)
@@ -178,9 +136,10 @@ def main() -> int:
                     text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
                     if (
                         "setup.init ok: host and first user created" in text and
-                        "desktop.files.open" in text and
-                        "[DESKTOP] files.open ok" in text and
-                        "desktop.pointer 16 12" in text and
+                        "desktop.launch Console" in text and
+                        "[DESKTOP] launch Console ok" in text and
+                        "desktop.close" in text and
+                        "[DESKTOP] close ok" in text and
                         "dev@luna:~$" in text
                     ):
                         break
@@ -202,35 +161,39 @@ def main() -> int:
         "setup.init ok: host and first user created",
         "login ok: session active",
         "desktop.boot",
-        "files surface ready",
-        "apps 1-5 or F/N/G/C/H",
         "[DESKTOP] boot ok",
-        "desktop.window",
-        "[DESKTOP] window id=",
-        "title=Console x=2 y=12 w=37 h=11 min=0 max=0",
-        "desktop.focus",
-        "[DESKTOP] focus ok",
+        "desktop.menu",
+        "[DESKTOP] menu ok",
         "desktop.status",
-        "[DESKTOP] status launcher=closed control=closed theme=0 selected=Console update=idle pair=unavailable policy=deny",
-        "desktop.pointer 8 17",
-        "[DESKTOP] pointer ok",
-        "desktop.hit",
-        "[DESKTOP] hit kind=1 window=",
-        "desktop.click",
-        "[DESKTOP] click ok",
-        "desktop.launch Guard",
-        "security center",
-        "active cids: 4",
-        "observe entries: 1",
-        "[DESKTOP] launch Guard ok",
-        "title=Guard x=57 y=2 w=21 h=11 min=0 max=0",
         "desktop.launch Settings",
         "settings surface ready",
         "[DESKTOP] launch Settings ok",
-        "[DESKTOP] status launcher=closed control=open theme=0 selected=Settings update=idle pair=unavailable policy=deny",
+        "desktop.window",
+        "[DESKTOP] window id=",
+        "title=Settings x=40 y=14 w=17 h=7 min=0 max=0",
         "desktop.settings",
         "[DESKTOP] settings ok",
-        "[DESKTOP] status launcher=closed control=open theme=0 selected=Settings update=idle pair=unavailable policy=deny",
+        "desktop.launch Settings",
+        "desktop.launch Files",
+        "files surface ready",
+        "[DESKTOP] launch Files ok",
+        "title=Files x=2 y=2 w=26 h=9 min=0 max=0",
+        "desktop.files.next",
+        "[DESKTOP] files.next ok",
+        "desktop.files.open",
+        "[DESKTOP] files.open ok",
+        "desktop.launch Notes",
+        "workspace created",
+        "[DESKTOP] launch Notes ok",
+        "desktop.note workspace draft",
+        "[DESKTOP] note ok",
+        "title=Notes x=29 y=2 w=27 h=9 min=0 max=0",
+        "desktop.launch Console",
+        "apps 1-5 or F/N/G/C/H",
+        "[DESKTOP] launch Console ok",
+        "title=Console x=2 y=12 w=37 h=11 min=0 max=0",
+        "desktop.focus",
+        "[DESKTOP] focus ok",
         "desktop.minimize",
         "[DESKTOP] minimize ok",
         "desktop.maximize",
@@ -239,38 +202,8 @@ def main() -> int:
         "[DESKTOP] control ok",
         "desktop.theme",
         "[DESKTOP] theme ok",
-        "desktop.launch Notes",
-        "workspace created",
-        "[DESKTOP] launch Notes ok",
-        "desktop.note workspace draft",
-        "[DESKTOP] note ok",
-        "title=Notes x=29 y=2 w=27 h=9 min=0 max=0",
-        "desktop.status",
-        "[DESKTOP] status launcher=closed control=closed theme=1 selected=Notes update=idle pair=unavailable policy=deny",
-        "desktop.launch Files",
-        "files surface ready",
-        "[DESKTOP] launch Files ok",
-        "desktop.launch Console",
-        "apps 1-5 or F/N/G/C/H",
-        "[DESKTOP] launch Console ok",
-        "title=Console x=2 y=12 w=37 h=11 min=0 max=0",
-        "desktop.files.next",
-        "files surface ready",
-        "[DESKTOP] files.next ok",
-        "desktop.files.open",
-        "files surface ready",
-        "[DESKTOP] files.open ok",
-        "[DESKTOP] status launcher=closed control=closed theme=0 selected=Files update=idle pair=unavailable policy=deny",
-        "desktop.pointer 78 24",
-        "[DESKTOP] hit kind=0 window=0 glyph=1",
-        "[DESKTOP] status launcher=closed control=open theme=0 selected=Files update=idle pair=unavailable policy=deny",
-        "desktop.pointer 60 16",
-        "[DESKTOP] hit kind=0 window=0 glyph=1",
-        "desktop.pointer 60 13",
-        "[DESKTOP] hit kind=0 window=0 glyph=1",
-        "desktop.pointer 16 12",
-        "[DESKTOP] hit kind=1 window=",
-        "[DESKTOP] status launcher=closed control=closed theme=0 selected=Files update=idle pair=unavailable policy=deny",
+        "desktop.close",
+        "[DESKTOP] close ok",
         "dev@luna:~$",
     ]
     for needle in required:

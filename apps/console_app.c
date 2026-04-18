@@ -27,12 +27,5 @@ static void app_write(const struct luna_bootview *bootview, const char *text) {
 }
 
 void SYSV_ABI console_app_entry(const struct luna_bootview *bootview) {
-    app_write(bootview, "[CONSOLE] desktop bridge\r\n");
     app_write(bootview, "apps 1-5 or F/N/G/C/H\r\n");
-    app_write(bootview, "menu Esc   focus Tab\r\n");
-    app_write(bootview, "move or browse with arrows\r\n");
-    app_write(bootview, "open with Enter\r\n");
-    app_write(bootview, "type in Notes when the note is focused\r\n");
-    app_write(bootview, "next open Settings, Files, or Notes\r\n");
-    app_write(bootview, "window keys F6 close  F7 hide  F8 zoom\r\n");
 }

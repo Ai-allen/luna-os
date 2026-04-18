@@ -23,6 +23,9 @@
 %define STAGE_PD_ENTRY_COUNT 2
 %endif
 
+%assign STAGE_TOTAL_BYTES (STAGE_SECTORS * 512)
+%assign STAGE_TOTAL_CHUNKS ((STAGE_SECTORS + 126) / 127)
+
 %define BOUNCE_BUFFER_ADDR 0x10000
 
 [org 0x8000]
@@ -47,9 +50,14 @@ lunaloader_stage1_start:
     out 0x92, al
 
     mov word [remaining_sectors], STAGE_SECTORS
+    mov word [total_chunk_count], STAGE_TOTAL_CHUNKS
+    mov word [chunk_index], 0
+    mov dword [loaded_bytes], 0
+    mov dword [total_stage_bytes], STAGE_TOTAL_BYTES
     mov dword [dest_ptr], STAGE_LOAD_ADDR
     mov dword [dap_lba], STAGE_LBA
     mov dword [dap_lba + 4], 0
+    call log_stage_plan
 
 load_stage:
     cmp word [remaining_sectors], 0
@@ -61,24 +69,29 @@ load_stage:
     mov ax, 127
 .chunk_ready:
     mov [dap_count], ax
+    mov byte [current_chunk_final], 0
+    cmp word [remaining_sectors], 127
+    ja .not_final
+    mov byte [current_chunk_final], 1
+.not_final:
+    movzx ecx, word [dap_count]
+    shl ecx, 9
+    mov [copy_bytes], ecx
     mov si, dap
     mov dl, [boot_drive]
     mov ah, 0x42
     int 0x13
     jc load_fail
 
-    mov si, msg_lunaloader_read
-    call serial_write
-    movzx ecx, word [dap_count]
-    shl ecx, 9
-    mov [copy_bytes], ecx
+    inc word [chunk_index]
+    call log_stage_read_progress
     call copy_chunk_to_stage
-    mov si, msg_lunaloader_copy
-    call serial_write
+    call log_stage_copy_progress
 
     movzx eax, word [dap_count]
     sub word [remaining_sectors], ax
     shl eax, 9
+    add dword [loaded_bytes], eax
     add dword [dest_ptr], eax
 
     movzx eax, word [dap_count]
@@ -87,8 +100,7 @@ load_stage:
     jmp load_stage
 
 stage_loaded:
-    mov si, msg_lunaloader_loaded
-    call serial_write
+    call log_stage_loaded
     cli
     xor eax, eax
     mov edi, 0x1000
@@ -165,17 +177,161 @@ serial_write:
     lodsb
     test al, al
     jz .done
+    call serial_write_char
+    jmp serial_write
+.done:
+    ret
+
+serial_write_char:
+    push bx
+    push dx
+    mov bl, al
 .wait:
     mov dx, 0x3FD
     in al, dx
     test al, 0x20
     jz .wait
     mov dx, 0x3F8
-    mov al, [si - 1]
+    mov al, bl
     out dx, al
-    jmp serial_write
-.done:
+    pop dx
+    pop bx
     ret
+
+serial_write_hex_nibble:
+    and al, 0x0F
+    cmp al, 10
+    jb .digit
+    add al, 'A' - 10
+    jmp serial_write_char
+.digit:
+    add al, '0'
+    jmp serial_write_char
+
+serial_write_hex16:
+    push ax
+    push cx
+    mov cx, 4
+.loop:
+    rol ax, 4
+    push ax
+    and al, 0x0F
+    call serial_write_hex_nibble
+    pop ax
+    loop .loop
+    pop cx
+    pop ax
+    ret
+
+serial_write_hex32:
+    o32 push eax
+    push cx
+    mov cx, 8
+.loop:
+    o32 rol eax, 4
+    o32 push eax
+    and al, 0x0F
+    call serial_write_hex_nibble
+    o32 pop eax
+    loop .loop
+    pop cx
+    o32 pop eax
+    ret
+
+serial_write_bool:
+    cmp byte [current_chunk_final], 0
+    je .no
+    mov si, msg_bool_yes
+    jmp serial_write
+.no:
+    mov si, msg_bool_no
+    jmp serial_write
+
+log_stage_chunk_progress_core:
+    push ax
+    push si
+    mov ax, [chunk_index]
+    call serial_write_hex16
+    mov si, msg_chunk_sep
+    call serial_write
+    mov ax, [total_chunk_count]
+    call serial_write_hex16
+    mov si, msg_chunk_offset
+    call serial_write
+    mov eax, [loaded_bytes]
+    call serial_write_hex32
+    mov si, msg_chunk_size
+    call serial_write
+    mov eax, [copy_bytes]
+    call serial_write_hex32
+    mov si, msg_chunk_total
+    call serial_write
+    mov eax, [total_stage_bytes]
+    call serial_write_hex32
+    mov si, msg_chunk_final
+    call serial_write
+    call serial_write_bool
+    pop si
+    pop ax
+    ret
+
+log_stage_plan:
+    mov si, msg_lunaloader_plan
+    call serial_write
+    mov ax, [total_chunk_count]
+    call serial_write_hex16
+    mov si, msg_plan_bytes
+    call serial_write
+    mov eax, [total_stage_bytes]
+    call serial_write_hex32
+    mov si, msg_plan_entry
+    call serial_write
+    mov eax, STAGE_LOAD_ADDR + STAGE_ENTRY_OFFSET
+    call serial_write_hex32
+    mov si, msg_newline
+    jmp serial_write
+
+log_stage_read_progress:
+    mov si, msg_lunaloader_read
+    call serial_write
+    call log_stage_chunk_progress_core
+    mov si, msg_chunk_lba
+    call serial_write
+    mov eax, [dap_lba]
+    call serial_write_hex32
+    mov si, msg_newline
+    jmp serial_write
+
+log_stage_copy_progress:
+    mov si, msg_lunaloader_copy
+    call serial_write
+    call log_stage_chunk_progress_core
+    mov si, msg_chunk_dest
+    call serial_write
+    mov eax, [dest_ptr]
+    call serial_write_hex32
+    mov si, msg_newline
+    jmp serial_write
+
+log_stage_loaded:
+    mov si, msg_lunaloader_loaded
+    call serial_write
+    mov ax, [chunk_index]
+    call serial_write_hex16
+    mov si, msg_chunk_sep
+    call serial_write
+    mov ax, [total_chunk_count]
+    call serial_write_hex16
+    mov si, msg_loaded_bytes
+    call serial_write
+    mov eax, [loaded_bytes]
+    call serial_write_hex32
+    mov si, msg_plan_entry
+    call serial_write
+    mov eax, STAGE_LOAD_ADDR + STAGE_ENTRY_OFFSET
+    call serial_write_hex32
+    mov si, msg_newline
+    jmp serial_write
 
 copy_chunk_to_stage:
     cli
@@ -246,20 +402,59 @@ boot_drive:
     db 0
 remaining_sectors:
     dw 0
+total_chunk_count:
+    dw 0
+chunk_index:
+    dw 0
+current_chunk_final:
+    db 0
+    db 0
+loaded_bytes:
+    dd 0
+total_stage_bytes:
+    dd 0
 dest_ptr:
     dd 0
 copy_bytes:
     dd 0
 msg_lunaloader_enter:
     db "[LunaLoader] Stage 1 online", 13, 10, 0
+msg_lunaloader_plan:
+    db "[LunaLoader] Stage 1 plan chunks=", 0
 msg_lunaloader_read:
-    db "[LunaLoader] Stage 1 read", 13, 10, 0
+    db "[LunaLoader] Stage 1 read chunk=", 0
 msg_lunaloader_copy:
-    db "[LunaLoader] Stage 1 copy", 13, 10, 0
+    db "[LunaLoader] Stage 1 copy chunk=", 0
 msg_lunaloader_loaded:
-    db "[LunaLoader] Stage 2 loaded", 13, 10, 0
+    db "[LunaLoader] Stage 2 loaded ok chunks=", 0
 msg_lunaloader_fail:
     db "[LunaLoader] Stage 1 fail", 13, 10, 0
+msg_chunk_sep:
+    db "/", 0
+msg_chunk_offset:
+    db " offset=0x", 0
+msg_chunk_size:
+    db " size=0x", 0
+msg_chunk_total:
+    db " total=0x", 0
+msg_chunk_final:
+    db " final=", 0
+msg_chunk_lba:
+    db " lba=0x", 0
+msg_chunk_dest:
+    db " dest=0x", 0
+msg_plan_bytes:
+    db " total_bytes=0x", 0
+msg_plan_entry:
+    db " entry=0x", 0
+msg_loaded_bytes:
+    db " total_bytes=0x", 0
+msg_bool_yes:
+    db "yes", 0
+msg_bool_no:
+    db "no", 0
+msg_newline:
+    db 13, 10, 0
 
 align 8, db 0
 dap:

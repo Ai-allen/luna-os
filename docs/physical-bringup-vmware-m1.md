@@ -52,11 +52,27 @@ The VMware cross-check does not require:
 - `update.apply`
 - complete app coverage
 
+Current validated extension beyond the minimum M1 gate:
+
+- the current automated desktop cross-check reaches
+  `desktop.boot -> Settings -> Files -> Console`
+- the current VMware path therefore provides a stronger pre-physical comparison
+  than the minimum shell-ready-only M1 success line
+
 ## Boot Path
 
 Create the session directory first:
 
 - `pwsh -NoProfile -File .\build\start_vmware_bringup_session.ps1`
+
+Each session directory now includes:
+
+- `finalize-session.ps1`
+- `firsthop-summary.txt`
+- `firsthop-classification.txt`
+- `firsthop-reference.txt`
+- `firsthop-delta.txt`
+- `firsthop-verdict.txt`
 
 Then create a VMware Workstation VM with:
 
@@ -99,6 +115,7 @@ has moved into runtime bring-up.
 For each VMware run, save:
 
 - `vmware.log`
+- `vmware_m1.serial.log` or `serial-capture.log` when serial is enabled
 - screenshot of the last visible screen if boot stops
 - the session checklist and operator notes
 - whether `[GRAPHICS] framebuffer ready` or `[GRAPHICS] console ready` appeared
@@ -109,14 +126,43 @@ If the VM boots into shell, also record:
 - result of `setup/status` or minimum boot state query
 - whether keyboard input works in shell
 
+After saving the serial capture, run:
+
+- `.\finalize-session.ps1`
+
+This writes:
+
+- `firsthop-summary.txt`
+- `firsthop-classification.txt`
+- `firsthop-reference.txt`
+- `firsthop-delta.txt`
+- `firsthop-log.txt`
+- `firsthop-verdict.txt`
+
+These artifacts keep VMware and the first future real-machine trace aligned to
+the same handoff/storage/display/input/driver-family triage model.
+When a raw `DISK` residual exposes only an `lba=...`, the verdict now refines
+it into `lsys+offset` or `ldat+offset` when the selected healthy reference
+provides the matching disk layout context.
+
 ## Current Status
 
 Current repository status is:
 
 - the UEFI loader exposes the handoff checkpoints needed for VMware comparison
 - the VMware session directory script exists
-- VMware automation via `vmrun` is present on the host but is not yet starting
-  successfully in this environment
+- the automated VMware desktop cross-check
+  `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
+  is now running successfully in this environment
+- current verified output reaches:
+  - `[BOOT] dawn online`
+  - `[USER] shell ready`
+  - `first-setup required`
+  - `[DESKTOP] boot ok`
+  - `[DESKTOP] launch Settings ok`
+  - `[DESKTOP] launch Files ok`
+  - `[DESKTOP] launch Console ok`
 
-That means the first VMware bring-up should currently be treated as a
-manual-but-instrumented cross-check, not as a fully automated gate.
+That means VMware UEFI is no longer only a manual comparison path. It is now a
+real automated pre-physical gate, but it still does not substitute for a real
+Intel or AMD machine run.

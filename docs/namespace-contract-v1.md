@@ -51,6 +51,8 @@ Backing storage remains LunaOS object/set storage:
   - authoritative space: `USER`
 - `/Logs`
   - authoritative space: `OBSERVABILITY`
+  - canonical persistent record model: `LSON` under `DATA` persistence with
+    `SECURITY` query and visibility governance
 - `/Recovery`
   - authoritative spaces: `LIFECYCLE`, `UPDATE`, `SECURITY`
 - `/Devices`

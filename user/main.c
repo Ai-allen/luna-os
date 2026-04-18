@@ -14,12 +14,19 @@ typedef void (SYSV_ABI *data_gate_fn_t)(struct luna_data_gate *gate);
 typedef void (SYSV_ABI *system_gate_fn_t)(struct luna_system_gate *gate);
 typedef void (SYSV_ABI *graphics_gate_fn_t)(struct luna_graphics_gate *gate);
 typedef void (SYSV_ABI *package_gate_fn_t)(struct luna_package_gate *gate);
+typedef void (SYSV_ABI *observe_gate_fn_t)(struct luna_observe_gate *gate);
 
 static void device_write(const char *text);
 static void device_write_bytes(const char *text, size_t size);
 static uint32_t graphics_render_desktop_state(uint32_t attr, uint32_t selection, uint32_t x, uint32_t y, uint32_t *kind, uint32_t *window_id, uint32_t *glyph);
 static uint32_t graphics_query_window(uint32_t window_id, uint32_t *out_window_id, uint32_t *out_x, uint32_t *out_y, uint32_t *out_width, uint32_t *out_height, uint32_t *out_minimized, uint32_t *out_maximized, char *out_title, uint64_t out_title_size);
 static int active_window_matches(const char *title);
+static uint32_t graphics_create_window_native(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const char *title, uint32_t *out_window_id);
+static uint32_t graphics_draw_window_char(uint32_t window_id, uint32_t x, uint32_t y, char ch, uint8_t attr);
+static uint32_t render_settings_window(void);
+static uint32_t render_files_window(void);
+static uint32_t render_notes_window(void);
+static uint32_t render_console_window(void);
 static void append_u32_decimal(char *out, uint32_t value);
 static void append_u32_hex_fixed(char *out, uint32_t value, uint32_t digits);
 static void append_u64_hex_fixed(char *out, uint64_t value, uint32_t digits);
@@ -42,6 +49,12 @@ static uint32_t network_send_packet(const void *payload, uint64_t size);
 static uint32_t network_recv_packet(void *out, uint64_t size, uint64_t *out_size);
 static uint32_t network_get_info(struct luna_net_info *out);
 static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out);
+static void print_lasql_catalog(void);
+static void print_lasql_files(void);
+static void print_lasql_logs(void);
+static int file_query_row_visible(const struct luna_query_row *row);
+static uint32_t query_visible_file_rows(struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count);
+static int query_selected_file_row(struct luna_query_row *out_row, uint32_t *out_count);
 static int prepare_files_surface(void);
 static void print_files_status(void);
 static void print_package_feedback(const char *action, const char *name, size_t len, uint32_t status);
@@ -88,6 +101,8 @@ static struct luna_cid g_data_seed_cid = {0, 0};
 static struct luna_cid g_data_pour_cid = {0, 0};
 static struct luna_cid g_data_draw_cid = {0, 0};
 static struct luna_cid g_data_gather_cid = {0, 0};
+static struct luna_cid g_data_query_cid = {0, 0};
+static struct luna_cid g_observe_read_cid = {0, 0};
 static struct luna_cid g_device_list_cid = {0, 0};
 static struct luna_cid g_device_read_cid = {0, 0};
 static struct luna_cid g_device_write_cid = {0, 0};
@@ -134,6 +149,10 @@ static uint32_t g_package_count = 0u;
 static uint32_t g_theme_variant = 0u;
 static struct luna_object_ref g_theme_object = {0u, 0u};
 static struct luna_object_ref g_note_object = {0u, 0u};
+static uint32_t g_settings_window_id = 0u;
+static uint32_t g_files_window_id = 0u;
+static uint32_t g_notes_window_id = 0u;
+static uint32_t g_console_window_id = 0u;
 static const char g_note_marker[] = "LUNA-NOTE\r\n";
 static const char g_theme_marker[] = "LUNA-THEME\r\n";
 static char g_note_body[97] = "Luna note seed";
@@ -147,13 +166,22 @@ static struct luna_object_ref g_user_profile_object = {0u, 0u};
 static struct luna_object_ref g_user_desktop_set = {0u, 0u};
 static struct luna_object_ref g_user_downloads_set = {0u, 0u};
 static uint32_t g_files_selection = 0u;
-static struct luna_object_ref g_files_refs_buffer[LUNA_DATA_OBJECT_CAPACITY];
 static struct luna_object_ref g_files_candidate_refs[LUNA_DATA_OBJECT_CAPACITY];
+static struct {
+    struct luna_query_request request;
+    struct luna_query_row rows[LUNA_DATA_OBJECT_CAPACITY];
+} g_lasql_data_payload;
+static struct {
+    struct luna_query_request request;
+    struct luna_query_row rows[LUNA_OBSERVE_LOG_CAPACITY];
+} g_lasql_observe_payload;
 static struct luna_cid g_system_query_cid = {0, 0};
 static char g_hostname[32] = "luna";
 static char g_username[16] = "guest";
 static uint32_t g_user_setup_required = 1u;
 static uint32_t g_user_logged_in = 0u;
+static uint64_t g_user_session_low = 0u;
+static uint64_t g_user_session_high = 0u;
 static struct {
     uint32_t ready;
     uint32_t peer_id;
@@ -174,7 +202,8 @@ static const char g_msg_help[] =
     "core: setup.status  setup.init <hostname> <username> <password>  login <username> <password>  logout  whoami  hostname  id  home.status\r\n"
     "apps: list-apps  run <app>  package.install <app>  package.remove <app>\r\n"
     "settings: settings.status  update.status  update.apply  pairing.status  net.status  net.connect [peer]  net.send <text>  net.recv  net.info\r\n"
-    "desktop: desktop.settings  desktop.launch <app>  desktop.files.next  desktop.files.open  desktop.note <text>  exit\r\n"
+    "lasql: lasql.catalog  lasql.files  lasql.logs\r\n"
+    "desktop: desktop.boot  desktop.menu  desktop.settings  desktop.launch <app>  desktop.files.prev  desktop.files.next  desktop.files.open  desktop.note <text>  desktop.minimize  desktop.maximize  desktop.close  exit\r\n"
     "diagnostics: net.external  net.loop  net.inbound  desktop.status  cap-count  cap-list  seal-list  list-spaces  space-map  space-log  store-info  store-check  list-devices  lane-census  pci-scan  revoke-cap <domain>\r\n";
 static const char g_msg_exit[] = "session locked\r\n";
 static const char g_msg_unknown[] = "unknown command; run help\r\n";
@@ -732,6 +761,8 @@ static void copy_single_line(char *out, uint32_t out_size, const char *src) {
 
 static void reset_active_user_projection(void) {
     g_user_logged_in = 0u;
+    g_user_session_low = 0u;
+    g_user_session_high = 0u;
     g_user_object.low = 0u;
     g_user_object.high = 0u;
     g_user_secret_object.low = 0u;
@@ -893,6 +924,100 @@ static int auth_login_secret(struct luna_object_ref secret_object, const char *u
         (struct luna_gate *)(uintptr_t)manifest->security_gate_base
     );
     return gate->status == LUNA_GATE_OK;
+}
+
+static int security_derive_user_secret(struct luna_object_ref user_ref, uint64_t salt, const char *username, size_t username_len, const char *password, size_t password_len, uint64_t *out_fold) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)manifest->security_gate_base;
+    struct luna_crypto_secret_request request;
+
+    if (out_fold == 0) {
+        return 0;
+    }
+    zero_bytes(&request, sizeof(request));
+    request.key_class = LUNA_CRYPTO_KEY_USER_AUTH;
+    request.flags = LUNA_USER_SECRET_FLAG_SECURITY_OWNED | LUNA_USER_SECRET_FLAG_INSTALL_BOUND;
+    request.subject_low = user_ref.low;
+    request.subject_high = user_ref.high;
+    request.salt = salt;
+    copy_fixed_text(request.username, sizeof(request.username), username, username_len);
+    copy_fixed_text(request.secret, sizeof(request.secret), password, password_len);
+    zero_bytes((void *)(uintptr_t)manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 52u;
+    gate->opcode = LUNA_GATE_CRYPTO_SECRET;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->domain_key = LUNA_CAP_USER_AUTH;
+    gate->cid_low = g_user_auth_cid.low;
+    gate->cid_high = g_user_auth_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&request;
+    gate->buffer_size = sizeof(request);
+    ((security_gate_fn_t)(uintptr_t)manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)manifest->security_gate_base
+    );
+    if (gate->status != LUNA_GATE_OK) {
+        return 0;
+    }
+    *out_fold = request.output_low;
+    return 1;
+}
+
+static int security_open_user_session(struct luna_object_ref user_ref, struct luna_object_ref secret_ref) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)manifest->security_gate_base;
+    struct luna_auth_session_request request;
+
+    zero_bytes(&request, sizeof(request));
+    request.user_low = user_ref.low;
+    request.user_high = user_ref.high;
+    request.secret_low = secret_ref.low;
+    request.secret_high = secret_ref.high;
+    zero_bytes((void *)(uintptr_t)manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 53u;
+    gate->opcode = LUNA_GATE_AUTH_SESSION_OPEN;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->domain_key = LUNA_CAP_USER_AUTH;
+    gate->cid_low = g_user_auth_cid.low;
+    gate->cid_high = g_user_auth_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&request;
+    gate->buffer_size = sizeof(request);
+    ((security_gate_fn_t)(uintptr_t)manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)manifest->security_gate_base
+    );
+    if (gate->status != LUNA_GATE_OK) {
+        return 0;
+    }
+    g_user_session_low = request.session_low;
+    g_user_session_high = request.session_high;
+    return 1;
+}
+
+static void security_close_user_session(void) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)manifest->security_gate_base;
+    struct luna_auth_session_request request;
+
+    if (g_user_session_low == 0u && g_user_session_high == 0u) {
+        return;
+    }
+    zero_bytes(&request, sizeof(request));
+    request.session_low = g_user_session_low;
+    request.session_high = g_user_session_high;
+    zero_bytes((void *)(uintptr_t)manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 54u;
+    gate->opcode = LUNA_GATE_AUTH_SESSION_CLOSE;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->domain_key = LUNA_CAP_USER_AUTH;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&request;
+    gate->buffer_size = sizeof(request);
+    ((security_gate_fn_t)(uintptr_t)manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)manifest->security_gate_base
+    );
 }
 
 static void load_profile_state(void) {
@@ -1171,52 +1296,6 @@ static uint64_t parse_u64_field(const char *blob, const char *marker) {
     return 0u;
 }
 
-static uint32_t documents_set_members(struct luna_object_ref *out_refs, uint64_t buffer_size) {
-    if (g_user_documents_set.low == 0u || g_user_documents_set.high == 0u) {
-        zero_bytes(out_refs, (size_t)buffer_size);
-        return 0u;
-    }
-    return gather_set_refs(g_user_documents_set, out_refs, buffer_size);
-}
-
-static uint32_t collect_files_document_refs(struct luna_object_ref *out_refs, uint64_t buffer_size) {
-    uint32_t count = 0u;
-    uint32_t capacity = (uint32_t)(buffer_size / sizeof(struct luna_object_ref));
-    char blob[96];
-    uint32_t valid = 0u;
-
-    zero_bytes(out_refs, (size_t)buffer_size);
-    if (capacity == 0u) {
-        return 0u;
-    }
-    count = documents_set_members(out_refs, buffer_size);
-    if (count != 0u) {
-        for (uint32_t i = 0u; i < count; ++i) {
-            if (draw_theme_bytes(out_refs[i], blob, sizeof(blob)) != LUNA_DATA_OK) {
-                continue;
-            }
-            if (!starts_with_text(blob, g_note_marker) && !starts_with_text(blob, g_theme_marker)) {
-                continue;
-            }
-            out_refs[valid++] = out_refs[i];
-        }
-        if (valid != 0u) {
-            return valid;
-        }
-        zero_bytes(out_refs, (size_t)buffer_size);
-    }
-    count = 0u;
-    if (!object_ref_is_null(g_note_object) && count < capacity) {
-        out_refs[count++] = g_note_object;
-    }
-    if (!object_ref_is_null(g_theme_object) &&
-        count < capacity &&
-        (count == 0u || !object_ref_equal(out_refs[0], g_theme_object))) {
-        out_refs[count++] = g_theme_object;
-    }
-    return count;
-}
-
 static uint32_t persist_documents_set_members(const struct luna_object_ref *refs, uint32_t count) {
     struct luna_set_header *header = (struct luna_set_header *)g_set_payload_buffer;
 
@@ -1469,6 +1548,292 @@ static uint32_t refresh_package_catalog(void) {
         g_package_count = LUNA_PACKAGE_CAPACITY;
     }
     return LUNA_PACKAGE_OK;
+}
+
+static uint32_t data_query_rows(uint32_t caller_space, struct luna_query_request *request, struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_data_gate *gate =
+        (volatile struct luna_data_gate *)(uintptr_t)manifest->data_gate_base;
+
+    if (capacity > LUNA_DATA_OBJECT_CAPACITY) {
+        capacity = LUNA_DATA_OBJECT_CAPACITY;
+    }
+    zero_bytes(&g_lasql_data_payload, sizeof(g_lasql_data_payload));
+    copy_bytes(&g_lasql_data_payload.request, request, sizeof(g_lasql_data_payload.request));
+    zero_bytes((void *)(uintptr_t)manifest->data_gate_base, sizeof(struct luna_data_gate));
+    gate->sequence = 88;
+    gate->opcode = LUNA_DATA_QUERY;
+    gate->cid_low = g_data_query_cid.low;
+    gate->cid_high = g_data_query_cid.high;
+    gate->writer_space = caller_space;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&g_lasql_data_payload;
+    gate->buffer_size = sizeof(g_lasql_data_payload.request) + ((uint64_t)capacity * sizeof(struct luna_query_row));
+    ((data_gate_fn_t)(uintptr_t)manifest->data_gate_entry)(
+        (struct luna_data_gate *)(uintptr_t)manifest->data_gate_base
+    );
+    if (gate->status != LUNA_DATA_OK) {
+        if (out_count != 0) {
+            *out_count = 0u;
+        }
+        return gate->status;
+    }
+    if (gate->result_count > capacity) {
+        gate->result_count = capacity;
+    }
+    copy_bytes(out_rows, g_lasql_data_payload.rows, (size_t)gate->result_count * sizeof(struct luna_query_row));
+    if (out_count != 0) {
+        *out_count = gate->result_count;
+    }
+    return LUNA_DATA_OK;
+}
+
+static int file_query_row_visible(const struct luna_query_row *row) {
+    if (row == 0) {
+        return 0;
+    }
+    return row->object_type == LUNA_NOTE_OBJECT_TYPE ||
+           row->object_type == LUNA_THEME_OBJECT_TYPE;
+}
+
+static uint32_t query_visible_file_rows(struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count) {
+    struct luna_query_request request;
+    uint32_t count = 0u;
+    uint32_t visible = 0u;
+
+    if (out_count != 0) {
+        *out_count = 0u;
+    }
+    if (out_rows == 0 || capacity == 0u) {
+        return LUNA_DATA_ERR_RANGE;
+    }
+    if (g_user_documents_set.low == 0u || g_user_documents_set.high == 0u) {
+        if (ensure_user_documents_set() != LUNA_DATA_OK) {
+            return LUNA_DATA_ERR_NOT_FOUND;
+        }
+    }
+
+    zero_bytes(&request, sizeof(request));
+    request.target = LUNA_QUERY_TARGET_USER_FILES;
+    request.filter_flags = LUNA_QUERY_FILTER_NAMESPACE | LUNA_QUERY_FILTER_OWNER;
+    request.projection_flags =
+        LUNA_QUERY_PROJECT_NAME |
+        LUNA_QUERY_PROJECT_REF |
+        LUNA_QUERY_PROJECT_TYPE |
+        LUNA_QUERY_PROJECT_STATE |
+        LUNA_QUERY_PROJECT_OWNER |
+        LUNA_QUERY_PROJECT_CREATED |
+        LUNA_QUERY_PROJECT_UPDATED;
+    request.sort_mode = LUNA_QUERY_SORT_UPDATED_DESC;
+    request.limit = capacity;
+    request.namespace_id = LUNA_QUERY_NAMESPACE_USER;
+    request.owner_low = g_user_object.low;
+    request.owner_high = g_user_object.high;
+    request.scope_low = g_user_documents_set.low;
+    request.scope_high = g_user_documents_set.high;
+    if (data_query_rows(LUNA_SPACE_USER, &request, out_rows, capacity, &count) != LUNA_DATA_OK) {
+        return LUNA_DATA_ERR_NOT_FOUND;
+    }
+
+    for (uint32_t i = 0u; i < count; ++i) {
+        if (!file_query_row_visible(&out_rows[i])) {
+            continue;
+        }
+        if (visible != i) {
+            out_rows[visible] = out_rows[i];
+        }
+        visible += 1u;
+    }
+    if (out_count != 0) {
+        *out_count = visible;
+    }
+    return LUNA_DATA_OK;
+}
+
+static int query_selected_file_row(struct luna_query_row *out_row, uint32_t *out_count) {
+    uint32_t count = 0u;
+    if (query_visible_file_rows(g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count) != LUNA_DATA_OK) {
+        if (out_count != 0) {
+            *out_count = 0u;
+        }
+        return 0;
+    }
+    if (out_count != 0) {
+        *out_count = count;
+    }
+    if (out_row == 0 || count == 0u || g_files_selection >= count) {
+        return 0;
+    }
+    *out_row = g_lasql_data_payload.rows[g_files_selection];
+    return 1;
+}
+
+static uint32_t observe_query_rows(uint32_t caller_space, struct luna_query_request *request, struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_observe_gate *gate =
+        (volatile struct luna_observe_gate *)(uintptr_t)manifest->observe_gate_base;
+
+    if (capacity > LUNA_OBSERVE_LOG_CAPACITY) {
+        capacity = LUNA_OBSERVE_LOG_CAPACITY;
+    }
+    zero_bytes(&g_lasql_observe_payload, sizeof(g_lasql_observe_payload));
+    copy_bytes(&g_lasql_observe_payload.request, request, sizeof(g_lasql_observe_payload.request));
+    zero_bytes((void *)(uintptr_t)manifest->observe_gate_base, sizeof(struct luna_observe_gate));
+    gate->sequence = 89;
+    gate->opcode = LUNA_OBSERVE_QUERY;
+    gate->space_id = caller_space;
+    gate->cid_low = g_observe_read_cid.low;
+    gate->cid_high = g_observe_read_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&g_lasql_observe_payload;
+    gate->buffer_size = sizeof(g_lasql_observe_payload.request) + ((uint64_t)capacity * sizeof(struct luna_query_row));
+    ((observe_gate_fn_t)(uintptr_t)manifest->observe_gate_entry)(
+        (struct luna_observe_gate *)(uintptr_t)manifest->observe_gate_base
+    );
+    if (gate->status != LUNA_OBSERVE_OK) {
+        if (out_count != 0) {
+            *out_count = 0u;
+        }
+        return gate->status;
+    }
+    if (gate->result_count > capacity) {
+        gate->result_count = capacity;
+    }
+    copy_bytes(out_rows, g_lasql_observe_payload.rows, (size_t)gate->result_count * sizeof(struct luna_query_row));
+    if (out_count != 0) {
+        *out_count = gate->result_count;
+    }
+    return LUNA_OBSERVE_OK;
+}
+
+static void print_query_rows(struct luna_query_row *rows, uint32_t count) {
+    char digits[24];
+    for (uint32_t i = 0u; i < count; ++i) {
+        device_write("row ");
+        append_u32_decimal(digits, i + 1u);
+        device_write(digits);
+        device_write(": ");
+        if (rows[i].name[0] != '\0') {
+            device_write(rows[i].name);
+        } else if (rows[i].message[0] != '\0') {
+            device_write(rows[i].message);
+        } else {
+            device_write("object");
+        }
+        device_write(" type=");
+        append_u32_hex_fixed(digits, rows[i].object_type, 8u);
+        device_write(digits);
+        device_write(" state=");
+        append_u32_decimal(digits, rows[i].state);
+        device_write(digits);
+        if (rows[i].version != 0u) {
+            device_write(" version=");
+            append_u64_decimal(digits, rows[i].version);
+            device_write(digits);
+        }
+        if (rows[i].object_low != 0u || rows[i].object_high != 0u) {
+            char hex[17];
+            device_write(" ref=0x");
+            append_u64_hex_fixed(hex, rows[i].object_low, 16u);
+            device_write(hex);
+        }
+        device_write(g_msg_newline);
+    }
+}
+
+static void print_lasql_catalog(void) {
+    struct luna_query_request request;
+    uint32_t status;
+    uint32_t count;
+    zero_bytes(&request, sizeof(request));
+    request.target = LUNA_QUERY_TARGET_PACKAGE_CATALOG;
+    request.filter_flags = LUNA_QUERY_FILTER_NAMESPACE;
+    request.projection_flags = LUNA_QUERY_PROJECT_NAME | LUNA_QUERY_PROJECT_LABEL | LUNA_QUERY_PROJECT_REF | LUNA_QUERY_PROJECT_TYPE | LUNA_QUERY_PROJECT_STATE | LUNA_QUERY_PROJECT_VERSION;
+    request.sort_mode = LUNA_QUERY_SORT_NAME_ASC;
+    request.limit = LUNA_DATA_OBJECT_CAPACITY;
+    request.namespace_id = LUNA_QUERY_NAMESPACE_PACKAGE;
+    status = data_query_rows(LUNA_SPACE_USER, &request, g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count);
+    if (status != LUNA_DATA_OK) {
+        device_write("lasql.catalog fail\r\n");
+        return;
+    }
+    device_write("lasql.catalog ok\r\n");
+    print_query_rows(g_lasql_data_payload.rows, count);
+}
+
+static void print_lasql_files(void) {
+    struct luna_query_request request;
+    uint32_t status;
+    uint32_t count;
+    zero_bytes(&request, sizeof(request));
+    request.target = LUNA_QUERY_TARGET_USER_FILES;
+    request.filter_flags = LUNA_QUERY_FILTER_NAMESPACE | LUNA_QUERY_FILTER_OWNER;
+    request.projection_flags = LUNA_QUERY_PROJECT_NAME | LUNA_QUERY_PROJECT_REF | LUNA_QUERY_PROJECT_TYPE | LUNA_QUERY_PROJECT_STATE | LUNA_QUERY_PROJECT_OWNER | LUNA_QUERY_PROJECT_CREATED | LUNA_QUERY_PROJECT_UPDATED;
+    request.sort_mode = LUNA_QUERY_SORT_UPDATED_DESC;
+    request.limit = LUNA_DATA_OBJECT_CAPACITY;
+    request.namespace_id = LUNA_QUERY_NAMESPACE_USER;
+    request.owner_low = g_user_object.low;
+    request.owner_high = g_user_object.high;
+    request.scope_low = g_user_documents_set.low;
+    request.scope_high = g_user_documents_set.high;
+    status = data_query_rows(LUNA_SPACE_USER, &request, g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count);
+    if (status != LUNA_DATA_OK) {
+        device_write("lasql.files fail\r\n");
+        return;
+    }
+    device_write("lasql.files ok\r\n");
+    print_query_rows(g_lasql_data_payload.rows, count);
+}
+
+static void print_file_rows_status(struct luna_query_row *rows, uint32_t count) {
+    char digits[12];
+    char hex[17];
+
+    device_write("files.user ");
+    device_write(g_username);
+    device_write("@");
+    device_write(g_hostname);
+    device_write(g_msg_newline);
+    device_write("files.documents=0x");
+    append_u64_hex_fixed(hex, g_user_documents_set.low, 16u);
+    device_write(hex);
+    device_write(g_msg_newline);
+    device_write("files.visible=");
+    append_u32_decimal(digits, count);
+    device_write(digits);
+    device_write(" selected=");
+    append_u32_decimal(digits, g_files_selection);
+    device_write(digits);
+    device_write(g_msg_newline);
+    device_write("files.current=");
+    if (count == 0u || g_files_selection >= count) {
+        device_write("empty");
+    } else if (rows[g_files_selection].object_type == LUNA_THEME_OBJECT_TYPE) {
+        device_write("theme");
+    } else if (rows[g_files_selection].object_type == LUNA_NOTE_OBJECT_TYPE) {
+        device_write("notes");
+    } else {
+        device_write("unavailable");
+    }
+    device_write(g_msg_newline);
+}
+
+static void print_lasql_logs(void) {
+    struct luna_query_request request;
+    uint32_t status;
+    uint32_t count;
+    zero_bytes(&request, sizeof(request));
+    request.target = LUNA_QUERY_TARGET_OBSERVE_LOGS;
+    request.projection_flags = LUNA_QUERY_PROJECT_MESSAGE | LUNA_QUERY_PROJECT_STATE | LUNA_QUERY_PROJECT_OWNER | LUNA_QUERY_PROJECT_CREATED;
+    request.sort_mode = LUNA_QUERY_SORT_STAMP_DESC;
+    request.limit = LUNA_OBSERVE_LOG_CAPACITY;
+    status = observe_query_rows(LUNA_SPACE_USER, &request, g_lasql_observe_payload.rows, LUNA_OBSERVE_LOG_CAPACITY, &count);
+    if (status != LUNA_OBSERVE_OK) {
+        device_write("lasql.logs fail\r\n");
+        return;
+    }
+    device_write("lasql.logs ok\r\n");
+    print_query_rows(g_lasql_observe_payload.rows, count);
 }
 
 static uint32_t package_remove_named(const char *name, size_t len) {
@@ -2340,44 +2705,17 @@ static void print_settings_status(void) {
 }
 
 static void print_files_status(void) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    char digits[12];
-    char hex[17];
     uint32_t count = 0u;
-    char blob[96];
 
     if (!prepare_files_surface()) {
         device_write("files scope unavailable\r\n");
         return;
     }
-    count = collect_files_document_refs(refs, sizeof(refs));
-    device_write("files.user ");
-    device_write(g_username);
-    device_write("@");
-    device_write(g_hostname);
-    device_write(g_msg_newline);
-    device_write("files.documents=0x");
-    append_u64_hex_fixed(hex, g_user_documents_set.low, 16u);
-    device_write(hex);
-    device_write(g_msg_newline);
-    device_write("files.visible=");
-    append_u32_decimal(digits, count);
-    device_write(digits);
-    device_write(" selected=");
-    append_u32_decimal(digits, g_files_selection);
-    device_write(digits);
-    device_write(g_msg_newline);
-    device_write("files.current=");
-    if (count == 0u || g_files_selection >= count) {
-        device_write("empty");
-    } else if (draw_theme_bytes(refs[g_files_selection], blob, sizeof(blob)) != LUNA_DATA_OK) {
-        device_write("unavailable");
-    } else if (starts_with_text(blob, g_theme_marker)) {
-        device_write("theme");
-    } else {
-        device_write("unavailable");
+    if (query_visible_file_rows(g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count) != LUNA_DATA_OK) {
+        device_write("files scope unavailable\r\n");
+        return;
     }
-    device_write(g_msg_newline);
+    print_file_rows_status(g_lasql_data_payload.rows, count);
 }
 
 static void print_package_feedback(const char *action, const char *name, size_t len, uint32_t status) {
@@ -2504,10 +2842,13 @@ static int create_first_user_system(const char *hostname, size_t hostname_len, c
     zero_bytes(&secret, sizeof(secret));
     secret.magic = LUNA_USER_SECRET_MAGIC;
     secret.version = LUNA_USER_RECORD_VERSION;
+    secret.flags = LUNA_USER_SECRET_FLAG_SECURITY_OWNED | LUNA_USER_SECRET_FLAG_INSTALL_BOUND;
     secret.user_object = user_ref;
     salt = user_ref.low ^ home_ref.high ^ 0x13579BDF2468ACE0ull;
     secret.salt = salt;
-    secret.password_fold = fold_user_secret(username, username_len, password, password_len, salt);
+    if (!security_derive_user_secret(user_ref, salt, username, username_len, password, password_len, &secret.password_fold)) {
+        return 0;
+    }
     copy_fixed_text(secret.username, sizeof(secret.username), username, username_len);
 
     zero_bytes(&home, sizeof(home));
@@ -2548,7 +2889,11 @@ static int create_first_user_system(const char *hostname, size_t hostname_len, c
 
     g_host_object = host_ref;
     copy_fixed_text(g_hostname, sizeof(g_hostname), hostname, hostname_len);
+    if (!security_open_user_session(user_ref, secret_ref)) {
+        return 0;
+    }
     if (!activate_user_session(&user, user_ref)) {
+        security_close_user_session();
         return 0;
     }
     load_profile_state();
@@ -2573,7 +2918,11 @@ static int login_user_session(const char *username, size_t username_len, const c
     if (!auth_login_secret(user.secret_object, username, username_len, password, password_len)) {
         return 0;
     }
+    if (!security_open_user_session(user_ref, user.secret_object)) {
+        return 0;
+    }
     if (!activate_user_session(&user, user_ref)) {
+        security_close_user_session();
         return 0;
     }
     load_profile_state();
@@ -3037,6 +3386,61 @@ static uint32_t graphics_set_active_window(uint32_t window_id) {
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
+    ((graphics_gate_fn_t)(uintptr_t)manifest->graphics_gate_entry)(
+        (struct luna_graphics_gate *)(uintptr_t)manifest->graphics_gate_base
+    );
+    return gate->status;
+}
+
+static uint32_t graphics_create_window_native(
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height,
+    const char *title,
+    uint32_t *out_window_id
+) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_graphics_gate *gate =
+        (volatile struct luna_graphics_gate *)(uintptr_t)manifest->graphics_gate_base;
+
+    zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
+    gate->sequence = 67u;
+    gate->opcode = LUNA_GRAPHICS_CREATE_WINDOW;
+    gate->cid_low = g_graphics_draw_cid.low;
+    gate->cid_high = g_graphics_draw_cid.high;
+    gate->x = x;
+    gate->y = y;
+    gate->width = width;
+    gate->height = height;
+    gate->buffer_addr = (uint64_t)(uintptr_t)title;
+    gate->buffer_size = title != 0 ? text_length(title) : 0u;
+    ((graphics_gate_fn_t)(uintptr_t)manifest->graphics_gate_entry)(
+        (struct luna_graphics_gate *)(uintptr_t)manifest->graphics_gate_base
+    );
+    if (gate->status == LUNA_GRAPHICS_OK && out_window_id != 0) {
+        *out_window_id = gate->window_id;
+    }
+    return gate->status;
+}
+
+static uint32_t graphics_draw_window_char(uint32_t window_id, uint32_t x, uint32_t y, char ch, uint8_t attr) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_graphics_gate *gate =
+        (volatile struct luna_graphics_gate *)(uintptr_t)manifest->graphics_gate_base;
+
+    zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
+    gate->sequence = 66u;
+    gate->opcode = LUNA_GRAPHICS_DRAW_CHAR;
+    gate->cid_low = g_graphics_draw_cid.low;
+    gate->cid_high = g_graphics_draw_cid.high;
+    gate->window_id = window_id;
+    gate->x = x;
+    gate->y = y;
+    gate->glyph = (uint32_t)(uint8_t)ch;
+    gate->attr = attr;
     ((graphics_gate_fn_t)(uintptr_t)manifest->graphics_gate_entry)(
         (struct luna_graphics_gate *)(uintptr_t)manifest->graphics_gate_base
     );
@@ -4489,6 +4893,9 @@ static const char *package_display_name(const char *name, size_t len, uint32_t *
 }
 
 static int open_settings_surface(void) {
+    if (g_desktop_booted != 0u) {
+        return render_settings_window();
+    }
     if (g_control_open == 0u) {
         return graphics_toggle_control_center() == LUNA_GRAPHICS_OK;
     }
@@ -4506,7 +4913,6 @@ static int prepare_files_surface(void) {
         g_files_selection = 0u;
         return 1;
     }
-    (void)collect_files_document_refs(g_files_refs_buffer, sizeof(g_files_refs_buffer));
     count = file_visible_object_count();
     if (count == 0u) {
         g_files_selection = 0u;
@@ -4543,7 +4949,7 @@ static int run_app(const char *name, size_t len) {
             print_settings_status();
             return 1;
         }
-        if (open_settings_surface()) {
+        if (render_settings_window()) {
             device_write(g_msg_settings_ready);
             return 1;
         }
@@ -4564,8 +4970,28 @@ static int run_app(const char *name, size_t len) {
         if (g_desktop_booted == 0u) {
             print_files_status();
             device_write("files.next=run Notes or desktop.files.open\r\n");
+        } else if (!render_files_window()) {
+            device_write(g_msg_run_fail);
+            device_write("files window unavailable\r\n");
+            return 0;
         }
         return 1;
+    }
+    if ((len == 5u && chars_equal(name, "Notes", 5u)) ||
+        (len == 10u && chars_equal(name, "notes.luna", 10u)) ||
+        (display != 0 && text_equals(display, "Notes"))) {
+        if (g_desktop_booted != 0u && render_notes_window()) {
+            device_write("workspace created\r\n");
+            return 1;
+        }
+    }
+    if ((len == 7u && chars_equal(name, "Console", 7u)) ||
+        (len == 12u && chars_equal(name, "console.luna", 12u)) ||
+        (display != 0 && text_equals(display, "Console"))) {
+        if (g_desktop_booted != 0u && render_console_window()) {
+            device_write("apps 1-5 or F/N/G/C/H\r\n");
+            return 1;
+        }
     }
     zero_bytes((void *)(uintptr_t)manifest->program_gate_base, sizeof(struct luna_program_gate));
     gate->sequence = 56;
@@ -4655,6 +5081,10 @@ static void boot_desktop_session(void) {
     }
     for (uint32_t i = 0u; i < g_package_count; ++i) {
         if ((g_package_catalog[i].flags & LUNA_PACKAGE_FLAG_STARTUP) == 0u) {
+            continue;
+        }
+        if (text_equals(g_package_catalog[i].name, "console.luna") ||
+            text_equals(g_package_catalog[i].name, "console")) {
             continue;
         }
         g_launcher_index = i;
@@ -4788,8 +5218,14 @@ static int notes_selected(void) {
 }
 
 static void refresh_notes_app(void) {
-    static const char notes_name[] = "Notes";
-    (void)run_app(notes_name, sizeof(notes_name) - 1u);
+    if (g_desktop_booted != 0u) {
+        (void)render_notes_window();
+        return;
+    }
+    {
+        static const char notes_name[] = "Notes";
+        (void)run_app(notes_name, sizeof(notes_name) - 1u);
+    }
 }
 
 static void set_note_body_text(const char *text) {
@@ -4846,18 +5282,22 @@ static int files_select_index(uint32_t index) {
 }
 
 static void refresh_files_app(void) {
-    static const char files_name[] = "Files";
-    (void)run_app(files_name, sizeof(files_name) - 1u);
+    if (g_desktop_booted != 0u) {
+        (void)render_files_window();
+        return;
+    }
+    {
+        static const char files_name[] = "Files";
+        (void)run_app(files_name, sizeof(files_name) - 1u);
+    }
 }
 
 static uint32_t file_visible_object_count(void) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    if (g_user_documents_set.low == 0u || g_user_documents_set.high == 0u) {
-        if (ensure_user_documents_set() != LUNA_DATA_OK) {
-            return 0u;
-        }
+    uint32_t count = 0u;
+    if (query_visible_file_rows(g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count) != LUNA_DATA_OK) {
+        return 0u;
     }
-    return collect_files_document_refs(refs, sizeof(refs));
+    return count;
 }
 
 static int files_step_selection(int32_t delta) {
@@ -4882,10 +5322,7 @@ static int files_step_selection(int32_t delta) {
 }
 
 static int files_open_selection(void) {
-    static const char note_marker[] = "LUNA-NOTE\r\n";
-    static const char theme_marker[] = "LUNA-THEME\r\n";
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    char blob[96];
+    struct luna_query_row row;
     uint32_t count = 0u;
     int fallback_open = 0;
 
@@ -4910,8 +5347,8 @@ static int files_open_selection(void) {
         }
         return 0;
     }
-    count = collect_files_document_refs(refs, sizeof(refs));
-    if (count == 0u) {
+    zero_bytes(&row, sizeof(row));
+    if (!query_selected_file_row(&row, &count)) {
         launch_named_app("Notes");
         return 1;
     }
@@ -4927,23 +5364,11 @@ static int files_open_selection(void) {
         }
         return 0;
     }
-    if (draw_theme_bytes(refs[g_files_selection], blob, sizeof(blob)) != LUNA_DATA_OK) {
-        if (fallback_open == 1) {
-            launch_named_app("Notes");
-            return 1;
-        }
-        if (fallback_open == 2) {
-            cycle_theme();
-            refresh_files_app();
-            return 1;
-        }
-        return 0;
-    }
-    if (starts_with_text(blob, note_marker)) {
+    if (row.object_type == LUNA_NOTE_OBJECT_TYPE) {
         launch_named_app("Notes");
         return 1;
     }
-    if (starts_with_text(blob, theme_marker)) {
+    if (row.object_type == LUNA_THEME_OBJECT_TYPE) {
         cycle_theme();
         refresh_files_app();
         return 1;
@@ -5057,6 +5482,113 @@ static uint32_t graphics_query_window(
         *out_maximized = gate->attr;
     }
     return LUNA_GRAPHICS_OK;
+}
+
+static int window_is_live(uint32_t *window_id) {
+    uint32_t live_id = 0u;
+    if (window_id == 0 || *window_id == 0u) {
+        return 0;
+    }
+    if (graphics_query_window(*window_id, &live_id, 0, 0, 0, 0, 0, 0, 0, 0u) != LUNA_GRAPHICS_OK) {
+        *window_id = 0u;
+        return 0;
+    }
+    *window_id = live_id;
+    return 1;
+}
+
+static void window_fill_line(uint32_t window_id, uint32_t row, const char *text, uint8_t attr) {
+    uint32_t col = 0u;
+    while (col < 78u) {
+        char ch = ' ';
+        if (text != 0 && text[col] != '\0') {
+            ch = text[col];
+        }
+        (void)graphics_draw_window_char(window_id, col, row, ch, attr);
+        col += 1u;
+    }
+}
+
+static uint32_t ensure_native_window(
+    uint32_t *window_id,
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height,
+    const char *title
+) {
+    if (!window_is_live(window_id)) {
+        if (graphics_create_window_native(x, y, width, height, title, window_id) != LUNA_GRAPHICS_OK) {
+            return 0u;
+        }
+    }
+    return graphics_set_active_window(*window_id) == LUNA_GRAPHICS_OK;
+}
+
+static uint32_t render_settings_window(void) {
+    if (!ensure_native_window(&g_settings_window_id, 40u, 14u, 17u, 7u, "Settings")) {
+        return 0u;
+    }
+    window_fill_line(g_settings_window_id, 0u, "settings surface", 0x1Fu);
+    window_fill_line(g_settings_window_id, 1u, "account host home", 0x1Fu);
+    window_fill_line(g_settings_window_id, 2u, "update network pair", 0x1Fu);
+    window_fill_line(g_settings_window_id, 3u, "entry desktop", 0x1Fu);
+    return 1u;
+}
+
+static uint32_t render_files_window(void) {
+    char line0[48];
+    char line1[48];
+    char line2[48];
+    char digits[16];
+    uint32_t count = 0u;
+
+    if (!prepare_files_surface()) {
+        return 0u;
+    }
+    if (query_visible_file_rows(g_lasql_data_payload.rows, LUNA_DATA_OBJECT_CAPACITY, &count) != LUNA_DATA_OK) {
+        return 0u;
+    }
+    if (!ensure_native_window(&g_files_window_id, 2u, 2u, 26u, 9u, "Files")) {
+        return 0u;
+    }
+    zero_bytes(line0, sizeof(line0));
+    zero_bytes(line1, sizeof(line1));
+    zero_bytes(line2, sizeof(line2));
+    zero_bytes(digits, sizeof(digits));
+    append_u32_decimal(digits, count);
+    copy_single_line(line0, sizeof(line0), "files surface ready");
+    copy_single_line(line1, sizeof(line1), "documents visible");
+    copy_single_line(line2, sizeof(line2), digits);
+    window_fill_line(g_files_window_id, 0u, line0, 0x1Fu);
+    window_fill_line(g_files_window_id, 1u, "files.user", 0x1Fu);
+    window_fill_line(g_files_window_id, 2u, g_username, 0x1Fu);
+    window_fill_line(g_files_window_id, 3u, line1, 0x1Fu);
+    window_fill_line(g_files_window_id, 4u, line2, 0x1Fu);
+    window_fill_line(g_files_window_id, 5u, "open notes or theme", 0x1Fu);
+    return 1u;
+}
+
+static uint32_t render_notes_window(void) {
+    if (!ensure_native_window(&g_notes_window_id, 29u, 2u, 27u, 9u, "Notes")) {
+        return 0u;
+    }
+    window_fill_line(g_notes_window_id, 0u, "workspace created", 0x1Fu);
+    window_fill_line(g_notes_window_id, 1u, "notes surface ready", 0x1Fu);
+    window_fill_line(g_notes_window_id, 2u, g_note_body, 0x1Fu);
+    window_fill_line(g_notes_window_id, 3u, "desktop.note edits text", 0x1Fu);
+    return 1u;
+}
+
+static uint32_t render_console_window(void) {
+    if (!ensure_native_window(&g_console_window_id, 2u, 12u, 37u, 11u, "Console")) {
+        return 0u;
+    }
+    window_fill_line(g_console_window_id, 0u, "apps 1-5 or F/N/G/C/H", 0x1Fu);
+    window_fill_line(g_console_window_id, 1u, "menu Esc   focus Tab", 0x1Fu);
+    window_fill_line(g_console_window_id, 2u, "open Settings Files Notes", 0x1Fu);
+    window_fill_line(g_console_window_id, 3u, "window keys close min max", 0x1Fu);
+    return 1u;
 }
 
 static void print_desktop_window(void) {
@@ -5576,6 +6108,7 @@ static void shell_execute(const char *line, size_t len) {
     }
 
     if (len == 6u && chars_equal(line, "logout", 6u)) {
+        security_close_user_session();
         reset_active_user_projection();
         g_desktop_mode = 0u;
         device_write(g_msg_logout_ok);
@@ -5676,6 +6209,21 @@ static void shell_execute(const char *line, size_t len) {
 
     if (len == 9u && chars_equal(line, "list-apps", 9u)) {
         print_package_list();
+        return;
+    }
+
+    if (len == 13u && chars_equal(line, "lasql.catalog", 13u)) {
+        print_lasql_catalog();
+        return;
+    }
+
+    if (len == 11u && chars_equal(line, "lasql.files", 11u)) {
+        print_lasql_files();
+        return;
+    }
+
+    if (len == 10u && chars_equal(line, "lasql.logs", 10u)) {
+        print_lasql_logs();
         return;
     }
 
@@ -6149,9 +6697,11 @@ void SYSV_ABI user_entry_boot(const struct luna_bootview *bootview) {
         request_capability(LUNA_CAP_DATA_POUR, &g_data_pour_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_DATA_DRAW, &g_data_draw_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_DATA_GATHER, &g_data_gather_cid) != LUNA_GATE_OK ||
+        request_capability(LUNA_CAP_DATA_QUERY, &g_data_query_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_DEVICE_LIST, &g_device_list_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_DEVICE_READ, &g_device_read_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_DEVICE_WRITE, &g_device_write_cid) != LUNA_GATE_OK ||
+        request_capability(LUNA_CAP_OBSERVE_READ, &g_observe_read_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_NETWORK_SEND, &g_network_send_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_NETWORK_RECV, &g_network_recv_cid) != LUNA_GATE_OK ||
         request_capability(LUNA_CAP_NETWORK_PAIR, &g_network_pair_cid) != LUNA_GATE_OK ||

@@ -10,6 +10,13 @@ typedef void (SYSV_ABI *device_gate_fn_t)(struct luna_device_gate *gate);
 typedef void (SYSV_ABI *lifecycle_gate_fn_t)(struct luna_lifecycle_gate *gate);
 typedef void (SYSV_ABI *observe_gate_fn_t)(struct luna_observe_gate *gate);
 
+struct luna_guard_observe_payload {
+    struct luna_query_request request;
+    struct luna_query_row rows[4];
+};
+
+static struct luna_guard_observe_payload g_guard_observe_payload;
+
 static void app_write(const struct luna_bootview *bootview, const char *text) {
     uint64_t entry = 0u;
     volatile struct luna_manifest *manifest =
@@ -65,6 +72,7 @@ static void append_u32(char *out, uint32_t value) {
 
 static const char *space_name(uint32_t space_id);
 static const char *observe_level_name(uint32_t level);
+static uint32_t query_observe_logs(struct luna_cid cid, struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count);
 
 static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
     volatile struct luna_manifest *manifest =
@@ -459,51 +467,91 @@ static uint32_t read_observe_count(struct luna_cid cid, struct luna_observe_stat
     return 1u;
 }
 
-static void preview_observe_logs(const struct luna_bootview *bootview, struct luna_cid cid) {
+static uint32_t query_observe_logs(struct luna_cid cid, struct luna_query_row *out_rows, uint32_t capacity, uint32_t *out_count) {
     volatile struct luna_manifest *manifest =
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     volatile struct luna_observe_gate *gate =
         (volatile struct luna_observe_gate *)(uintptr_t)manifest->observe_gate_base;
-    volatile struct luna_observe_record *records =
-        (volatile struct luna_observe_record *)(uintptr_t)manifest->list_buffer_base;
-    char line[16];
-    uint32_t shown = 0u;
-    uint32_t start = 0u;
-    uint32_t i = 0u;
+    volatile struct luna_query_request *request = &g_guard_observe_payload.request;
+    volatile struct luna_query_row *rows = g_guard_observe_payload.rows;
+    uint32_t copied = 0u;
 
-    zero_bytes((void *)(uintptr_t)manifest->list_buffer_base, manifest->list_buffer_size);
+    if (out_count != 0) {
+        *out_count = 0u;
+    }
+    if (out_rows == 0 || capacity == 0u) {
+        return 0u;
+    }
+    if (capacity > (sizeof(g_guard_observe_payload.rows) / sizeof(g_guard_observe_payload.rows[0]))) {
+        capacity = (uint32_t)(sizeof(g_guard_observe_payload.rows) / sizeof(g_guard_observe_payload.rows[0]));
+    }
+    if (capacity == 0u) {
+        return 0u;
+    }
+
+    zero_bytes(&g_guard_observe_payload, sizeof(g_guard_observe_payload));
     zero_bytes((void *)(uintptr_t)manifest->observe_gate_base, sizeof(struct luna_observe_gate));
+    request->target = LUNA_QUERY_TARGET_OBSERVE_LOGS;
+    request->projection_flags =
+        LUNA_QUERY_PROJECT_MESSAGE |
+        LUNA_QUERY_PROJECT_STATE |
+        LUNA_QUERY_PROJECT_OWNER |
+        LUNA_QUERY_PROJECT_CREATED;
+    request->sort_mode = LUNA_QUERY_SORT_STAMP_DESC;
+    request->limit = capacity;
     gate->sequence = 97u;
-    gate->opcode = LUNA_OBSERVE_GET_LOGS;
+    gate->opcode = LUNA_OBSERVE_QUERY;
+    gate->space_id = LUNA_SPACE_PROGRAM;
     gate->cid_low = cid.low;
     gate->cid_high = cid.high;
-    gate->buffer_addr = manifest->list_buffer_base;
-    gate->buffer_size = manifest->list_buffer_size;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&g_guard_observe_payload;
+    gate->buffer_size = sizeof(struct luna_query_request) + ((uint64_t)capacity * sizeof(struct luna_query_row));
     ((observe_gate_fn_t)(uintptr_t)manifest->observe_gate_entry)(
         (struct luna_observe_gate *)(uintptr_t)manifest->observe_gate_base
     );
     if (gate->status != LUNA_OBSERVE_OK) {
+        return 0u;
+    }
+
+    copied = gate->result_count;
+    if (copied > capacity) {
+        copied = capacity;
+    }
+    for (uint32_t i = 0u; i < copied; ++i) {
+        out_rows[i] = rows[i];
+    }
+    if (out_count != 0) {
+        *out_count = copied;
+    }
+    return 1u;
+}
+
+static void preview_observe_logs(const struct luna_bootview *bootview, struct luna_cid cid) {
+    struct luna_query_row rows[4];
+    char line[16];
+    uint32_t shown = 0u;
+    uint32_t count = 0u;
+    uint32_t i = 0u;
+
+    zero_bytes(rows, sizeof(rows));
+    if (query_observe_logs(cid, rows, 4u, &count) == 0u || count == 0u) {
         return;
     }
 
-    if (gate->result_count > 2u) {
-        start = gate->result_count - 2u;
-    }
-
-    i = start;
-    while (i < gate->result_count && shown < 2u) {
+    app_write(bootview, "[GUARD] observe query=lasql\r\n");
+    while (i < count && shown < 2u) {
         app_write(bootview, "[GUARD] obs ");
-        if (space_name(records[i].space_id) != 0) {
-            app_write(bootview, space_name(records[i].space_id));
+        if (space_name((uint32_t)rows[i].owner_low) != 0) {
+            app_write(bootview, space_name((uint32_t)rows[i].owner_low));
         } else {
-            append_u32(line, records[i].space_id);
+            append_u32(line, (uint32_t)rows[i].owner_low);
             app_write(bootview, line);
         }
         app_write(bootview, " [");
-        app_write(bootview, observe_level_name(records[i].level));
+        app_write(bootview, observe_level_name(rows[i].state));
         app_write(bootview, "]");
         app_write(bootview, ": ");
-        app_write(bootview, (const char *)records[i].message);
+        app_write(bootview, (const char *)rows[i].message);
         app_write(bootview, "\r\n");
         shown += 1u;
         i += 1u;

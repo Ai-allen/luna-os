@@ -28,7 +28,7 @@ struct luna_desktop_shell_state g_shell_state = {
         { "notes.la", "Notes", 3u, 8u, 0u },
         { "guard.la", "Guard", 3u, 12u, 0u },
         { "console.la", "Console", 3u, 16u, 0u },
-        { "hello.la", "Hello", 3u, 20u, 0u },
+        { "hello.la", "Settings", 3u, 20u, 0u },
     },
 };
 struct luna_window_record g_windows[8];

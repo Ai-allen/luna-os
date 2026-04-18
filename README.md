@@ -148,3 +148,13 @@ External developers must target the frozen `.la` ABI declared in
 `include/luna_la_abi.h`, package via `.luna v2`, declare required capability
 keys in the manifest, and satisfy the current signer/source trust-chain rules
 before `PACKAGE` will accept installation.
+
+## Repository Governance Entry
+
+The current repository governance and developer entry documents are:
+
+- `AGENTS.md`
+- `docs/platform-contract-index.md`
+- `docs/compatibility-matrix.md`
+- `docs/developer-entry.md`
+- `docs/change-and-regression-rules.md`

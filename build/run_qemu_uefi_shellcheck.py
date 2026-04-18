@@ -145,6 +145,11 @@ def main() -> int:
         b"net.info\r\n"
         b"net.external\r\n"
         b"run Files\r\n"
+        b"revoke-cap program.load\r\n"
+        b"cap-count\r\n"
+        b"revoke-cap device.list\r\n"
+        b"cap-count\r\n"
+        b"list-devices\r\n"
     )
     patch_session_script(SHELLCHECK_DISK, commands, pack_devloop_bundle())
 
@@ -187,7 +192,7 @@ def main() -> int:
             while time.time() < deadline:
                 if LOG_PATH.exists():
                     text = strip_ansi(LOG_PATH.read_text(encoding="utf-8", errors="replace"))
-                    if "run Files" in text and "dev@luna:~$" in text:
+                    if "list-devices failed" in text and "dev@luna:~$" in text:
                         break
                     if "Exception Type" in text or "Can't find image information" in text:
                         break
@@ -205,6 +210,23 @@ def main() -> int:
     required = [
         "LunaLoader UEFI Stage 1 handoff",
         "[BOOT] dawn online",
+        "[DEVICE] fwblk source=ready target=ready flags=000000000000000C diag=0000000000000009 mode=normal",
+        "[DEVICE] disk path driver=ahci family=0000000E chain=ahci>fwblk>ata mode=normal",
+        "[DEVICE] disk select basis=ahci-runtime fwblk-src=ready fwblk-tgt=ready separate=missing ahci=ready pci=ready",
+        "[DEVICE] disk pci vendor=8086 device=2922 bdf=00:1F.02 class=01/06/01 hdr=80",
+        "[DEVICE] serial path driver=ich9-uart family=00000013",
+        "[DEVICE] serial select basis=ich9-pci pci=ready",
+        "[DEVICE] serial pci vendor=8086 device=2918 bdf=00:1F.00 class=06/01/00 hdr=80",
+        "[DEVICE] display path driver=std-vga-fb family=0000000F",
+        "[DEVICE] display select basis=std-vga-fb gop=ready pci=ready",
+        "[DEVICE] display pci vendor=1234 device=1111 bdf=00:01.00 class=03/00/00 hdr=00",
+        "[DEVICE] input path kbd=virtio-kbd ptr=i8042-mouse virtio=ready ps2=present lane=ready",
+        "[DEVICE] input select basis=virtio-kbd virtio-dev=ready virtio-ready=ready legacy=ready",
+        "[DEVICE] input pci vendor=1AF4 device=1052 bdf=00:03.00 class=09/00/00 hdr=00",
+        "[DEVICE] net path driver=e1000e family=0000000D lane=ready",
+        "[DEVICE] net select basis=e1000e-ready pci=ready live=ready",
+        "[DEVICE] net pci vendor=8086 device=10D3 bdf=00:02.00 class=02/00/00 hdr=00",
+        "[DEVICE] platform pci vendor=8086 device=29C0 bdf=00:00.00 class=06/00/00 hdr=00",
         "[SYSTEM] Space 14 ready.",
         "[USER] shell ready",
         "[USER] input lane ready",
@@ -223,7 +245,7 @@ def main() -> int:
         "home owner=dev@luna",
         "home.root=0x4C414653",
         "cap-count",
-        "caps: 021",
+        "caps: 023",
         "space-map",
         "package.install sample",
         "package.install ok",
@@ -250,6 +272,14 @@ def main() -> int:
         "net.external bytes=8 data=luna-ext",
         "run Files",
         "files surface ready",
+        "revoke-cap program.load",
+        "revoked: program.load (1)",
+        "caps: 022",
+        "revoke-cap device.list",
+        "revoked: device.list (1)",
+        "caps: 021",
+        "list-devices",
+        "list-devices failed",
         "dev@luna:~$",
     ]
     for needle in required:

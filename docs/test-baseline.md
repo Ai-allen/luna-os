@@ -17,6 +17,27 @@ The current frozen gates are:
 - `python .\build\run_qemu_updateapplycheck.py`
 - `python .\build\run_qemu_fullregression.py`
 
+Current non-gating bring-up tooling sanity path:
+
+- `python .\build\run_firsthop_suite.py`
+- `python .\build\run_firsthop_classifier_selftest.py`
+- `python .\build\select_firsthop_baseline.py .\build\qemu_uefi_shellcheck.log`
+- `python .\build\render_firsthop_verdict.py .\build\qemu_uefi_shellcheck.log`
+- `python .\build\run_bringup_session_smoke.py`
+
+This host-side smoke does not move the support matrix by itself. It only
+verifies that the current bring-up session helpers can still generate:
+
+- `firsthop-summary.txt`
+- `firsthop-classification.txt`
+- `firsthop-reference.txt`
+- `firsthop-delta.txt`
+- `firsthop-verdict.txt`
+
+from the current virtualized reference logs, and that the current firsthop
+classifier still splits minimal handoff/storage/input/governance cases the way
+the bring-up tooling expects.
+
 These baselines are aligned to current passing behavior and define the current
 RC3 freeze.
 
@@ -92,9 +113,9 @@ Frozen contract assertions:
   - `setup.init ok: host and first user created`
   - `login ok: session active`
 - Capability baseline:
-  - initial `caps: 021`
-  - after `revoke-cap program.load`: `caps: 020`
-  - after `revoke-cap device.list`: `caps: 019`
+  - initial `caps: 023`
+  - after `revoke-cap program.load`: `caps: 022`
+  - after `revoke-cap device.list`: `caps: 021`
 - Store baseline:
   - `lafs.version: 3`
   - `lafs.objects: 35`
@@ -186,6 +207,45 @@ Frozen contract assertions:
   - `desktop.files.open` -> ok
   - post-open desktop status remains on the current Files selection state
   - current tested hit output includes the current Files window and glyph facts
+
+## UEFI shellcheck Baseline
+
+### Purpose
+
+- Verify `UEFI -> LunaLoader -> LunaOS` reaches shell on the current virtualized
+  UEFI path.
+- Verify the pre-device handoff, UEFI block handoff, and current shell-visible
+  product path remain aligned with the automated gate.
+- Verify the current UEFI shellcheck closes on user-facing success and current
+  capability revoke behavior rather than stale older assertions.
+
+### Required Current Outputs
+
+- UEFI boot baseline:
+  - `LunaLoader UEFI Stage 1 handoff`
+  - `LunaLoader UEFI Stage 1 block-io ready`
+  - `LunaLoader UEFI Stage 1 gop ready`
+  - `[BOOT] fwblk handoff ok`
+  - `[BOOT] lsys super read ok`
+  - `[BOOT] native pair ok`
+- Session baseline:
+  - `[USER] shell ready`
+  - `first-setup required: no hostname or user configured`
+  - `setup.init ok: host and first user created`
+  - `login ok: session active`
+- Capability baseline:
+  - initial `caps: 023`
+  - after `revoke-cap program.load`: `caps: 022`
+  - after `revoke-cap device.list`: `caps: 021`
+  - `list-devices` must fail after `device.list` is revoked
+- Product baseline:
+  - `package.install sample` returns `ok`
+  - `package.remove sample` returns `ok`
+  - `run Settings` opens the settings surface
+  - `run Files` opens the files surface
+- UEFI network baseline:
+  - `net.info driver=13 flags=19 vendor=8086 device=10D3`
+  - `net.external state=ready scope=outbound-only`
 
 ## RC Residual Baseline Notes
 

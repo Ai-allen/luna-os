@@ -34,6 +34,9 @@ pub struct LunaBootView {
     pub data_store_lba: u64,
     pub volume_state: u32,
     pub system_mode: u32,
+    pub installer_target_flags: u64,
+    pub installer_target_system_lba: u64,
+    pub installer_target_data_lba: u64,
 }
 
 #[repr(C)]
@@ -158,6 +161,7 @@ pub struct LunaStoreSuperblock {
 }
 
 pub const LUNA_GATE_GOVERN: u32 = 12;
+pub const LUNA_GATE_QUERY_GOVERN: u32 = 17;
 pub const LUNA_DATA_ERR_DENIED: u32 = 0xD106;
 pub const LUNA_DATA_ERR_READONLY: u32 = 0xD107;
 pub const LUNA_DATA_ERR_RECOVERY: u32 = 0xD108;
@@ -182,6 +186,172 @@ pub const LUNA_GOVERN_MOUNT: u32 = 1;
 pub const LUNA_GOVERN_WRITE: u32 = 2;
 pub const LUNA_GOVERN_COMMIT: u32 = 3;
 pub const LUNA_GOVERN_REPLAY: u32 = 4;
+pub const LUNA_CAP_DATA_QUERY: u64 = 0xD206;
+pub const LUNA_DATA_QUERY: u32 = 10;
+pub const LUNA_OBSERVE_QUERY: u32 = 4;
+pub const LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL: u32 = 0x504B_4749;
+pub const LUNA_DATA_OBJECT_TYPE_PACKAGE_INDEX: u32 = 0x504B_474E;
+pub const LUNA_QUERY_TARGET_PACKAGE_CATALOG: u32 = 1;
+pub const LUNA_QUERY_TARGET_USER_FILES: u32 = 2;
+pub const LUNA_QUERY_TARGET_OBSERVE_LOGS: u32 = 3;
+pub const LUNA_QUERY_FILTER_NAMESPACE: u32 = 1u32 << 0;
+pub const LUNA_QUERY_FILTER_OWNER: u32 = 1u32 << 1;
+pub const LUNA_QUERY_FILTER_TYPE: u32 = 1u32 << 2;
+pub const LUNA_QUERY_FILTER_STATE: u32 = 1u32 << 3;
+pub const LUNA_QUERY_PROJECT_NAME: u32 = 1u32 << 0;
+pub const LUNA_QUERY_PROJECT_LABEL: u32 = 1u32 << 1;
+pub const LUNA_QUERY_PROJECT_REF: u32 = 1u32 << 2;
+pub const LUNA_QUERY_PROJECT_TYPE: u32 = 1u32 << 3;
+pub const LUNA_QUERY_PROJECT_STATE: u32 = 1u32 << 4;
+pub const LUNA_QUERY_PROJECT_OWNER: u32 = 1u32 << 5;
+pub const LUNA_QUERY_PROJECT_MESSAGE: u32 = 1u32 << 6;
+pub const LUNA_QUERY_PROJECT_VERSION: u32 = 1u32 << 7;
+pub const LUNA_QUERY_PROJECT_CREATED: u32 = 1u32 << 8;
+pub const LUNA_QUERY_PROJECT_UPDATED: u32 = 1u32 << 9;
+pub const LUNA_QUERY_SORT_NONE: u32 = 0;
+pub const LUNA_QUERY_SORT_NAME_ASC: u32 = 1;
+pub const LUNA_QUERY_SORT_CREATED_DESC: u32 = 2;
+pub const LUNA_QUERY_SORT_UPDATED_DESC: u32 = 3;
+pub const LUNA_QUERY_SORT_STAMP_DESC: u32 = 4;
+pub const LUNA_QUERY_NAMESPACE_PACKAGE: u32 = 1;
+pub const LUNA_QUERY_NAMESPACE_USER: u32 = 2;
+pub const LUNA_QUERY_NAMESPACE_OBSERVE: u32 = 3;
+pub const LUNA_QUERY_STATE_ANY: u32 = 0;
+pub const LUNA_QUERY_STATE_ACTIVE: u32 = 1;
+pub const LUNA_QUERY_STATE_ARCHIVED: u32 = 2;
+pub const LUNA_QUERY_FLAG_AUDIT_REQUIRED: u32 = 1u32 << 0;
+pub const LUNA_QUERY_FLAG_REDACTED: u32 = 1u32 << 1;
+pub const LUNA_LSON_MAGIC: u32 = 0x4C53_4F4E;
+pub const LUNA_LSON_VERSION: u32 = 0x0001_0000;
+pub const LUNA_LSON_BODY_BYTES: usize = 48;
+pub const LUNA_LSON_ATTR_TEXT_BYTES: usize = 16;
+pub const LUNA_LOG_CLASS_BOOT: u32 = 1;
+pub const LUNA_LOG_CLASS_LIFECYCLE: u32 = 2;
+pub const LUNA_LOG_CLASS_SYSTEM: u32 = 3;
+pub const LUNA_LOG_CLASS_DEVICE: u32 = 4;
+pub const LUNA_LOG_CLASS_DATA: u32 = 5;
+pub const LUNA_LOG_CLASS_SECURITY: u32 = 6;
+pub const LUNA_LOG_CLASS_CRYPTO: u32 = 7;
+pub const LUNA_LOG_CLASS_PACKAGE: u32 = 8;
+pub const LUNA_LOG_CLASS_INSTALL: u32 = 9;
+pub const LUNA_LOG_CLASS_UPDATE: u32 = 10;
+pub const LUNA_LOG_CLASS_RECOVERY: u32 = 11;
+pub const LUNA_LOG_CLASS_USER: u32 = 12;
+pub const LUNA_LOG_CLASS_QUERY: u32 = 13;
+pub const LUNA_LOG_BAND_TRACE: u32 = 1;
+pub const LUNA_LOG_BAND_DEBUG: u32 = 2;
+pub const LUNA_LOG_BAND_INFO: u32 = 3;
+pub const LUNA_LOG_BAND_NOTICE: u32 = 4;
+pub const LUNA_LOG_BAND_WARN: u32 = 5;
+pub const LUNA_LOG_BAND_ERROR: u32 = 6;
+pub const LUNA_LOG_BAND_FATAL: u32 = 7;
+pub const LUNA_LOG_BAND_AUDIT: u32 = 8;
+pub const LUNA_LSON_ENCODING_TEXT: u32 = 1;
+pub const LUNA_LSON_ENCODING_FRAME: u32 = 2;
+pub const LUNA_LSON_FLAG_PERSIST: u32 = 1u32 << 0;
+pub const LUNA_LSON_FLAG_AUDIT: u32 = 1u32 << 1;
+pub const LUNA_LSON_FLAG_REDACTED: u32 = 1u32 << 2;
+pub const LUNA_LSON_FLAG_DIGEST_ONLY: u32 = 1u32 << 3;
+pub const LUNA_LSON_FLAG_COMPRESSED: u32 = 1u32 << 4;
+pub const LUNA_LSON_ATTR_TAG: u32 = 1;
+pub const LUNA_LSON_ATTR_U64: u32 = 2;
+pub const LUNA_LSON_ATTR_I64: u32 = 3;
+pub const LUNA_LSON_ATTR_HEX: u32 = 4;
+pub const LUNA_LSON_ATTR_BOOL: u32 = 5;
+pub const LUNA_LSON_ATTR_TEXT: u32 = 6;
+pub const LUNA_LSON_ATTR_ID128: u32 = 7;
+pub const LUNA_LSON_KEY_NAMESPACE: u32 = 1;
+pub const LUNA_LSON_KEY_OWNER: u32 = 2;
+pub const LUNA_LSON_KEY_OBJECT: u32 = 3;
+pub const LUNA_LSON_KEY_TARGET: u32 = 4;
+pub const LUNA_LSON_KEY_TYPE: u32 = 5;
+pub const LUNA_LSON_KEY_STATE: u32 = 6;
+pub const LUNA_LSON_KEY_LBA: u32 = 7;
+pub const LUNA_LSON_KEY_DEVICE_ID: u32 = 8;
+pub const LUNA_LSON_KEY_DRIVER_FAMILY: u32 = 9;
+pub const LUNA_LSON_KEY_QUERY_TARGET: u32 = 10;
+pub const LUNA_LSON_KEY_POLICY_RESULT: u32 = 11;
+pub const LUNA_LSON_KEY_STATUS: u32 = 12;
+pub const LUNA_LSON_KEY_SOURCE: u32 = 13;
+pub const LUNA_LSON_KEY_SIGNER: u32 = 14;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct LunaQueryRequest {
+    pub target: u32,
+    pub filter_flags: u32,
+    pub projection_flags: u32,
+    pub sort_mode: u32,
+    pub limit: u32,
+    pub namespace_id: u32,
+    pub object_type: u32,
+    pub state: u32,
+    pub owner_low: u64,
+    pub owner_high: u64,
+    pub scope_low: u64,
+    pub scope_high: u64,
+    pub result_flags: u32,
+    pub reserved0: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct LunaQueryRow {
+    pub object_low: u64,
+    pub object_high: u64,
+    pub owner_low: u64,
+    pub owner_high: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub version: u64,
+    pub namespace_id: u32,
+    pub object_type: u32,
+    pub state: u32,
+    pub flags: u32,
+    pub name: [u8; 16],
+    pub label: [u8; 16],
+    pub message: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct LunaLsonAttr {
+    pub key: u32,
+    pub value_type: u32,
+    pub value_low: u64,
+    pub value_high: u64,
+    pub text: [u8; LUNA_LSON_ATTR_TEXT_BYTES],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct LunaLsonRecord {
+    pub magic: u32,
+    pub version: u32,
+    pub tick: u64,
+    pub actor_low: u64,
+    pub actor_high: u64,
+    pub trace_low: u64,
+    pub trace_high: u64,
+    pub session_low: u64,
+    pub session_high: u64,
+    pub install_low: u64,
+    pub install_high: u64,
+    pub record_class: u32,
+    pub band: u32,
+    pub space_id: u32,
+    pub writer_space: u32,
+    pub authority_space: u32,
+    pub encoding: u32,
+    pub flags: u32,
+    pub device_id: u32,
+    pub driver_family: u32,
+    pub attr_count: u32,
+    pub reserved0: u32,
+    pub kind: [u8; 24],
+    pub scope: [u8; 16],
+    pub body: [u8; LUNA_LSON_BODY_BYTES],
+}
 
 pub const LUNA_GRAPHICS_MOVE_WINDOW: u32 = 5;
 pub const LUNA_GRAPHICS_RENDER_DESKTOP: u32 = 6;
@@ -201,6 +371,9 @@ pub const LUNA_DEVICE_INPUT_READ: u32 = 7;
 pub const LUNA_DEVICE_BLOCK_READ: u32 = 8;
 pub const LUNA_DEVICE_BLOCK_WRITE: u32 = 9;
 pub const LUNA_DEVICE_DISPLAY_PRESENT: u32 = 10;
+pub const LUNA_DEVICE_BLOCK_WRITE_INSTALL_TARGET: u32 = 11;
+pub const LUNA_INSTALL_TARGET_PRESENT: u64 = 0x1;
+pub const LUNA_INSTALL_TARGET_BOUND: u64 = 0x2;
 pub const LUNA_PROGRAM_BUNDLE_FLAG_DRIVER: u32 = 0x0000_0001;
 pub const LUNA_DEVICE_ID_SERIAL0: u32 = 1;
 pub const LUNA_DEVICE_ID_DISK0: u32 = 2;
@@ -209,6 +382,7 @@ pub const LUNA_DEVICE_ID_CLOCK0: u32 = 4;
 pub const LUNA_DEVICE_ID_INPUT0: u32 = 5;
 pub const LUNA_DEVICE_ID_NET0: u32 = 6;
 pub const LUNA_DEVICE_ID_POINTER0: u32 = 7;
+pub const LUNA_DEVICE_ID_DISK1: u32 = 8;
 
 pub const LUNA_LANE_CLASS_STREAM: u32 = 1;
 pub const LUNA_LANE_CLASS_BLOCK: u32 = 2;

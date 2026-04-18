@@ -610,7 +610,9 @@ void SYSV_ABI program_app_write(const struct luna_bootview *bootview, const char
         return;
     }
     panel = find_panel(g_loaded_name);
-    if (panel != 0 && (g_graphics_draw_cid.low != 0 || g_graphics_draw_cid.high != 0)) {
+    if (panel != 0 &&
+        !panel_name_matches(g_loaded_name, "console") &&
+        (g_graphics_draw_cid.low != 0 || g_graphics_draw_cid.high != 0)) {
         panel_write(panel, text);
     }
     if (g_device_write_cid.low != 0 || g_device_write_cid.high != 0) {
@@ -1047,9 +1049,11 @@ static void program_start(struct luna_program_gate *gate) {
         }
     }
     device_write("audit program.start approved=SECURITY\r\n");
+    device_write("[PROGRAM] start entry begin\r\n");
     device_write_hex_value("[PROGRAM] start handoff=", g_loaded_entry);
 
     ((app_entry_fn_t)(uintptr_t)g_loaded_entry)(g_bootview);
+    device_write("[PROGRAM] start entry return\r\n");
     gate->status = LUNA_PROGRAM_OK;
 }
 

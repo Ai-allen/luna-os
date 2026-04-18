@@ -1,8 +1,29 @@
 #ifndef LUNA_PROTO_H
 #define LUNA_PROTO_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include "luna_layout.h"
+
+static inline void *luna_memcpy(void *dest, const void *src, size_t len) {
+    uint8_t *out = (uint8_t *)dest;
+    const uint8_t *in = (const uint8_t *)src;
+    for (size_t i = 0; i < len; ++i) {
+        out[i] = in[i];
+    }
+    return dest;
+}
+
+static inline void *luna_memset(void *dest, int value, size_t len) {
+    uint8_t *out = (uint8_t *)dest;
+    for (size_t i = 0; i < len; ++i) {
+        out[i] = (uint8_t)value;
+    }
+    return dest;
+}
+
+#define memcpy luna_memcpy
+#define memset luna_memset
 
 #define LUNA_MANIFEST_MAGIC 0x414E554Cull
 #define LUNA_PROTO_VERSION 0x00000250u
@@ -24,6 +45,10 @@
 #define LUNA_LIFECYCLE_CAPACITY 16u
 #define LUNA_SYSTEM_CAPACITY 16u
 #define LUNA_OBSERVE_LOG_CAPACITY 32u
+#define LUNA_LSON_MAGIC 0x4C534F4Eu
+#define LUNA_LSON_VERSION 0x00010000u
+#define LUNA_LSON_BODY_BYTES 48u
+#define LUNA_LSON_ATTR_TEXT_BYTES 16u
 #define LUNA_NETWORK_PACKET_BYTES 256u
 #define LUNA_PACKAGE_CAPACITY 8u
 #define LUNA_DESKTOP_ENTRY_CAPACITY 8u
@@ -61,6 +86,11 @@ enum luna_gate_opcode {
     LUNA_GATE_POLICY_SYNC = 10,
     LUNA_GATE_AUTH_LOGIN = 11,
     LUNA_GATE_GOVERN = 12,
+    LUNA_GATE_AUTH_SESSION_OPEN = 13,
+    LUNA_GATE_AUTH_SESSION_CLOSE = 14,
+    LUNA_GATE_CRYPTO_SECRET = 15,
+    LUNA_GATE_TRUST_EVAL = 16,
+    LUNA_GATE_QUERY_GOVERN = 17,
 };
 
 enum luna_gate_status {
@@ -83,6 +113,23 @@ enum luna_policy_state {
     LUNA_POLICY_STATE_REVOKE = 3,
 };
 
+enum luna_crypto_key_class {
+    LUNA_CRYPTO_KEY_USER_AUTH = 1,
+    LUNA_CRYPTO_KEY_TRUST = 2,
+    LUNA_CRYPTO_KEY_LDAT = 3,
+};
+
+enum luna_trust_result_state {
+    LUNA_TRUST_RESULT_ALLOW = 1,
+    LUNA_TRUST_RESULT_DENY = 2,
+    LUNA_TRUST_RESULT_PROTO = 3,
+    LUNA_TRUST_RESULT_INTEGRITY = 4,
+    LUNA_TRUST_RESULT_SIGNATURE = 5,
+    LUNA_TRUST_RESULT_SIGNER = 6,
+    LUNA_TRUST_RESULT_SOURCE = 7,
+    LUNA_TRUST_RESULT_BINDING = 8,
+};
+
 enum luna_cap_kind {
     LUNA_CID_KIND_SESSION = 1,
     LUNA_CID_KIND_ROOT = 2,
@@ -94,6 +141,7 @@ enum luna_cap_domain {
     LUNA_CAP_DATA_DRAW = 0xD203u,
     LUNA_CAP_DATA_SHRED = 0xD204u,
     LUNA_CAP_DATA_GATHER = 0xD205u,
+    LUNA_CAP_DATA_QUERY = 0xD206u,
     LUNA_CAP_LIFE_WAKE = 0xC901u,
     LUNA_CAP_LIFE_READ = 0xC902u,
     LUNA_CAP_LIFE_SPAWN = 0xC903u,
@@ -142,6 +190,7 @@ enum luna_data_opcode {
     LUNA_DATA_VERIFY_STORE = 7,
     LUNA_DATA_SET_ADD_MEMBER = 8,
     LUNA_DATA_SET_REMOVE_MEMBER = 9,
+    LUNA_DATA_QUERY = 10,
 };
 
 enum luna_data_status {
@@ -260,6 +309,7 @@ enum luna_device_opcode {
     LUNA_DEVICE_BLOCK_READ = 8,
     LUNA_DEVICE_BLOCK_WRITE = 9,
     LUNA_DEVICE_DISPLAY_PRESENT = 10,
+    LUNA_DEVICE_BLOCK_WRITE_INSTALL_TARGET = 11,
 };
 
 enum luna_device_status {
@@ -369,12 +419,80 @@ enum luna_observe_opcode {
     LUNA_OBSERVE_LOG = 1,
     LUNA_OBSERVE_GET_LOGS = 2,
     LUNA_OBSERVE_GET_STATS = 3,
+    LUNA_OBSERVE_QUERY = 4,
 };
 
 enum luna_observe_status {
     LUNA_OBSERVE_OK = 0,
     LUNA_OBSERVE_ERR_INVALID_CAP = 0xAA10u,
     LUNA_OBSERVE_ERR_NO_ROOM = 0xAA11u,
+};
+
+enum luna_log_class {
+    LUNA_LOG_CLASS_BOOT = 1,
+    LUNA_LOG_CLASS_LIFECYCLE = 2,
+    LUNA_LOG_CLASS_SYSTEM = 3,
+    LUNA_LOG_CLASS_DEVICE = 4,
+    LUNA_LOG_CLASS_DATA = 5,
+    LUNA_LOG_CLASS_SECURITY = 6,
+    LUNA_LOG_CLASS_CRYPTO = 7,
+    LUNA_LOG_CLASS_PACKAGE = 8,
+    LUNA_LOG_CLASS_INSTALL = 9,
+    LUNA_LOG_CLASS_UPDATE = 10,
+    LUNA_LOG_CLASS_RECOVERY = 11,
+    LUNA_LOG_CLASS_USER = 12,
+    LUNA_LOG_CLASS_QUERY = 13,
+};
+
+enum luna_log_band {
+    LUNA_LOG_BAND_TRACE = 1,
+    LUNA_LOG_BAND_DEBUG = 2,
+    LUNA_LOG_BAND_INFO = 3,
+    LUNA_LOG_BAND_NOTICE = 4,
+    LUNA_LOG_BAND_WARN = 5,
+    LUNA_LOG_BAND_ERROR = 6,
+    LUNA_LOG_BAND_FATAL = 7,
+    LUNA_LOG_BAND_AUDIT = 8,
+};
+
+enum luna_lson_encoding {
+    LUNA_LSON_ENCODING_TEXT = 1,
+    LUNA_LSON_ENCODING_FRAME = 2,
+};
+
+enum luna_lson_flag {
+    LUNA_LSON_FLAG_PERSIST = 1u << 0,
+    LUNA_LSON_FLAG_AUDIT = 1u << 1,
+    LUNA_LSON_FLAG_REDACTED = 1u << 2,
+    LUNA_LSON_FLAG_DIGEST_ONLY = 1u << 3,
+    LUNA_LSON_FLAG_COMPRESSED = 1u << 4,
+};
+
+enum luna_lson_attr_type {
+    LUNA_LSON_ATTR_TAG = 1,
+    LUNA_LSON_ATTR_U64 = 2,
+    LUNA_LSON_ATTR_I64 = 3,
+    LUNA_LSON_ATTR_HEX = 4,
+    LUNA_LSON_ATTR_BOOL = 5,
+    LUNA_LSON_ATTR_TEXT = 6,
+    LUNA_LSON_ATTR_ID128 = 7,
+};
+
+enum luna_lson_attr_key {
+    LUNA_LSON_KEY_NAMESPACE = 1,
+    LUNA_LSON_KEY_OWNER = 2,
+    LUNA_LSON_KEY_OBJECT = 3,
+    LUNA_LSON_KEY_TARGET = 4,
+    LUNA_LSON_KEY_TYPE = 5,
+    LUNA_LSON_KEY_STATE = 6,
+    LUNA_LSON_KEY_LBA = 7,
+    LUNA_LSON_KEY_DEVICE_ID = 8,
+    LUNA_LSON_KEY_DRIVER_FAMILY = 9,
+    LUNA_LSON_KEY_QUERY_TARGET = 10,
+    LUNA_LSON_KEY_POLICY_RESULT = 11,
+    LUNA_LSON_KEY_STATUS = 12,
+    LUNA_LSON_KEY_SOURCE = 13,
+    LUNA_LSON_KEY_SIGNER = 14,
 };
 
 enum luna_network_opcode {
@@ -479,6 +597,59 @@ enum luna_update_txn_state {
 #define LUNA_DATA_OBJECT_TYPE_USER_SECRET 0x4C555345u
 #define LUNA_DATA_OBJECT_TYPE_USER_HOME_ROOT 0x4C55484Du
 #define LUNA_DATA_OBJECT_TYPE_USER_PROFILE 0x4C555046u
+#define LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL 0x504B4749u
+#define LUNA_DATA_OBJECT_TYPE_PACKAGE_INDEX 0x504B474Eu
+
+enum luna_query_target {
+    LUNA_QUERY_TARGET_PACKAGE_CATALOG = 1,
+    LUNA_QUERY_TARGET_USER_FILES = 2,
+    LUNA_QUERY_TARGET_OBSERVE_LOGS = 3,
+};
+
+enum luna_query_filter_flag {
+    LUNA_QUERY_FILTER_NAMESPACE = 1u << 0,
+    LUNA_QUERY_FILTER_OWNER = 1u << 1,
+    LUNA_QUERY_FILTER_TYPE = 1u << 2,
+    LUNA_QUERY_FILTER_STATE = 1u << 3,
+};
+
+enum luna_query_projection_flag {
+    LUNA_QUERY_PROJECT_NAME = 1u << 0,
+    LUNA_QUERY_PROJECT_LABEL = 1u << 1,
+    LUNA_QUERY_PROJECT_REF = 1u << 2,
+    LUNA_QUERY_PROJECT_TYPE = 1u << 3,
+    LUNA_QUERY_PROJECT_STATE = 1u << 4,
+    LUNA_QUERY_PROJECT_OWNER = 1u << 5,
+    LUNA_QUERY_PROJECT_MESSAGE = 1u << 6,
+    LUNA_QUERY_PROJECT_VERSION = 1u << 7,
+    LUNA_QUERY_PROJECT_CREATED = 1u << 8,
+    LUNA_QUERY_PROJECT_UPDATED = 1u << 9,
+};
+
+enum luna_query_sort_mode {
+    LUNA_QUERY_SORT_NONE = 0,
+    LUNA_QUERY_SORT_NAME_ASC = 1,
+    LUNA_QUERY_SORT_CREATED_DESC = 2,
+    LUNA_QUERY_SORT_UPDATED_DESC = 3,
+    LUNA_QUERY_SORT_STAMP_DESC = 4,
+};
+
+enum luna_query_namespace {
+    LUNA_QUERY_NAMESPACE_PACKAGE = 1,
+    LUNA_QUERY_NAMESPACE_USER = 2,
+    LUNA_QUERY_NAMESPACE_OBSERVE = 3,
+};
+
+enum luna_query_state {
+    LUNA_QUERY_STATE_ANY = 0,
+    LUNA_QUERY_STATE_ACTIVE = 1,
+    LUNA_QUERY_STATE_ARCHIVED = 2,
+};
+
+enum luna_query_flag {
+    LUNA_QUERY_FLAG_AUDIT_REQUIRED = 1u << 0,
+    LUNA_QUERY_FLAG_REDACTED = 1u << 1,
+};
 
 #define LUNA_HOST_RECORD_MAGIC 0x484F5354u
 #define LUNA_USER_RECORD_MAGIC 0x55534552u
@@ -486,6 +657,8 @@ enum luna_update_txn_state {
 #define LUNA_USER_HOME_MAGIC 0x484F4D45u
 #define LUNA_USER_PROFILE_MAGIC 0x50524F46u
 #define LUNA_USER_RECORD_VERSION 1u
+#define LUNA_USER_SECRET_FLAG_SECURITY_OWNED (1u << 0)
+#define LUNA_USER_SECRET_FLAG_INSTALL_BOUND (1u << 1)
 
 enum luna_ai_opcode {
     LUNA_AI_INFER = 1,
@@ -535,6 +708,7 @@ enum luna_device_id {
     LUNA_DEVICE_ID_INPUT0 = 5,
     LUNA_DEVICE_ID_NET0 = 6,
     LUNA_DEVICE_ID_POINTER0 = 7,
+    LUNA_DEVICE_ID_DISK1 = 8,
 };
 
 struct luna_display_cell {
@@ -704,6 +878,57 @@ struct luna_user_auth_request {
     uint32_t reserved0;
 };
 
+struct luna_auth_session_request {
+    uint64_t user_low;
+    uint64_t user_high;
+    uint64_t secret_low;
+    uint64_t secret_high;
+    uint64_t session_low;
+    uint64_t session_high;
+    uint32_t flags;
+    uint32_t reserved0;
+};
+
+struct luna_crypto_secret_request {
+    uint32_t key_class;
+    uint32_t flags;
+    uint64_t subject_low;
+    uint64_t subject_high;
+    uint64_t salt;
+    uint64_t output_low;
+    uint64_t output_high;
+    char username[16];
+    char secret[32];
+};
+
+struct luna_trust_eval_request {
+    uint32_t result_state;
+    uint32_t flags;
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    uint16_t sdk_major;
+    uint16_t sdk_minor;
+    uint64_t bundle_id;
+    uint64_t source_id;
+    uint64_t signer_id;
+    uint64_t app_version;
+    uint64_t integrity_check;
+    uint64_t header_bytes;
+    uint64_t entry_offset;
+    uint64_t signature_check;
+    uint64_t blob_addr;
+    uint64_t blob_size;
+    uint64_t binding_id;
+    uint64_t result_integrity;
+    uint64_t result_signature;
+    uint32_t capability_count;
+    uint32_t min_proto_version;
+    uint32_t max_proto_version;
+    uint32_t reserved0;
+    char name[16];
+    uint64_t capability_keys[4];
+};
+
 struct luna_cap_record {
     uint32_t holder_space;
     uint32_t target_space;
@@ -760,7 +985,16 @@ struct luna_bootview {
     uint64_t data_store_lba;
     uint32_t volume_state;
     uint32_t system_mode;
+    uint64_t installer_target_flags;
+    uint64_t installer_target_system_lba;
+    uint64_t installer_target_data_lba;
 };
+
+#define LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET 0x120ull
+#define LUNA_BOOTVIEW_UEFI_GRAPHICS_HANDOFF_OFFSET 0x1A0ull
+
+#define LUNA_INSTALL_TARGET_PRESENT 0x1ull
+#define LUNA_INSTALL_TARGET_BOUND 0x2ull
 
 struct luna_object_ref {
     uint64_t low;
@@ -939,6 +1173,76 @@ struct luna_device_gate {
     uint64_t size;
     uint64_t buffer_addr;
     uint64_t buffer_size;
+};
+
+struct luna_query_request {
+    uint32_t target;
+    uint32_t filter_flags;
+    uint32_t projection_flags;
+    uint32_t sort_mode;
+    uint32_t limit;
+    uint32_t namespace_id;
+    uint32_t object_type;
+    uint32_t state;
+    uint64_t owner_low;
+    uint64_t owner_high;
+    uint64_t scope_low;
+    uint64_t scope_high;
+    uint32_t result_flags;
+    uint32_t reserved0;
+};
+
+struct luna_query_row {
+    uint64_t object_low;
+    uint64_t object_high;
+    uint64_t owner_low;
+    uint64_t owner_high;
+    uint64_t created_at;
+    uint64_t updated_at;
+    uint64_t version;
+    uint32_t namespace_id;
+    uint32_t object_type;
+    uint32_t state;
+    uint32_t flags;
+    char name[16];
+    char label[16];
+    char message[32];
+};
+
+struct luna_lson_attr {
+    uint32_t key;
+    uint32_t value_type;
+    uint64_t value_low;
+    uint64_t value_high;
+    char text[LUNA_LSON_ATTR_TEXT_BYTES];
+};
+
+struct luna_lson_record {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t tick;
+    uint64_t actor_low;
+    uint64_t actor_high;
+    uint64_t trace_low;
+    uint64_t trace_high;
+    uint64_t session_low;
+    uint64_t session_high;
+    uint64_t install_low;
+    uint64_t install_high;
+    uint32_t record_class;
+    uint32_t band;
+    uint32_t space_id;
+    uint32_t writer_space;
+    uint32_t authority_space;
+    uint32_t encoding;
+    uint32_t flags;
+    uint32_t device_id;
+    uint32_t driver_family;
+    uint32_t attr_count;
+    uint32_t reserved0;
+    char kind[24];
+    char scope[16];
+    char body[LUNA_LSON_BODY_BYTES];
 };
 
 struct luna_observe_record {
