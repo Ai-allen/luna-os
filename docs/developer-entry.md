@@ -62,6 +62,50 @@ Inside LunaOS:
 python .\tools\luna_orchestrate_audit.py --bundle .\build\devloop_sample.luna --log .\build\qemu_shellcheck.log
 ```
 
+## Repository Git Transport
+
+The current recommended git transport for this repository is `SSH over 443`.
+This avoids the intermittent HTTPS reset/timeout path that can appear on some
+Windows host environments while keeping normal `git push` / `git fetch`
+behavior.
+
+Recommended remote:
+
+```powershell
+git remote set-url origin git@github.com:Ai-allen/luna-os.git
+```
+
+Recommended SSH host mapping:
+
+```text
+Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile ~/.ssh/id_ed25519_github
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+```
+
+Minimum verification path:
+
+```powershell
+ssh -T git@github.com
+git ls-remote origin
+git push -u origin main
+```
+
+Expected auth result:
+
+- `Hi Ai-allen! You've successfully authenticated, but GitHub does not provide shell access.`
+
+Working rule:
+
+- keep the GitHub SSH key as an `Authentication Key`
+- do not commit or share the private key
+- if HTTPS push starts timing out again, confirm the remote is still
+  `git@github.com:Ai-allen/luna-os.git`
+
 ## Capability Contract
 
 - capabilities are declared in the `.luna` manifest
