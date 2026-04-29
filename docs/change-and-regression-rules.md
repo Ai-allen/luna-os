@@ -64,6 +64,12 @@ Required path:
   - `python .\build\build.py`
   - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
   - `python .\build\run_qemu_shellcheck.py`
+- storage failure / recovery / activation gating:
+  - `python .\build\build.py`
+  - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
+  - `python .\build\run_qemu_shellcheck.py`
+  - `python .\build\run_qemu_recoverycheck.py`
+  - `python .\build\run_qemu_lsysfailurecheck.py`
 - update/apply/activation:
   - `python .\build\build.py`
   - `python .\build\run_qemu_updateapplycheck.py`

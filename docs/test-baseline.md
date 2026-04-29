@@ -107,6 +107,35 @@ Frozen contract assertions:
 - `DATA` must reject unauthorized or readonly mutation
 - fresh split-image must not degrade to readonly during first setup
 
+## Targeted Storage Failure / Recovery Checks
+
+This focused regression path preserves current storage-rooted failure and
+activation-recovery handling without widening the primary RC3 release gate
+list. Run it when changes touch `LSYS` / `LDAT` contract checks, activation
+state handling, storage-rooted driver classification, or the stop-before-
+`PACKAGE` / `UPDATE` / `USER` boundary.
+
+Required path:
+
+- `python .\build\build.py`
+- `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
+- `python .\build\run_qemu_shellcheck.py`
+- `python .\build\run_qemu_recoverycheck.py`
+- `python .\build\run_qemu_lsysfailurecheck.py`
+
+Frozen current assertions:
+
+- corrupted `LDAT` peer contract must emit `[BOOT] ldat contract fail` and
+  `[SYSTEM] storage gate=recovery`
+- corrupted `LSYS` peer contract must emit `[BOOT] lsys contract fail` and
+  `[SYSTEM] storage gate=fatal`
+- activation recovery must emit `[BOOT] activation recovery` and
+  `[SYSTEM] storage gate=recovery`
+- storage-rooted `fatal` or `recovery` gates must stop before `PACKAGE`,
+  `UPDATE`, and `USER`
+- the current `recovery` path may continue only through the foundational
+  pre-product spaces observed in passing logs before the stop gate is published
+
 ## shellcheck Baseline
 
 ### Purpose

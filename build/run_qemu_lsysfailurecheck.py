@@ -10,16 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 IMAGE = ROOT / "lunaos.img"
-LDAT_READFAIL_IMAGE = ROOT / "lunaos_ldat_readfail.img"
-LDAT_READFAIL_LOG = ROOT / "qemu_ldat_readfail.log"
-LDAT_READFAIL_ERR = ROOT / "qemu_ldat_readfail.err.log"
-LDAT_CONTRACT_IMAGE = ROOT / "lunaos_recovery.img"
-LDAT_CONTRACT_LOG = ROOT / "qemu_recovery_boot.log"
-LDAT_CONTRACT_ERR = ROOT / "qemu_recovery_boot.err.log"
-DATA_STORE_LBA = 0x8800
+LSYS_CONTRACT_IMAGE = ROOT / "lunaos_lsys_contractfail.img"
+LSYS_CONTRACT_LOG = ROOT / "qemu_lsys_contractfail.log"
+LSYS_CONTRACT_ERR = ROOT / "qemu_lsys_contractfail.err.log"
+ACTIVATION_RECOVERY_IMAGE = ROOT / "lunaos_activation_recovery.img"
+ACTIVATION_RECOVERY_LOG = ROOT / "qemu_activation_recovery.log"
+ACTIVATION_RECOVERY_ERR = ROOT / "qemu_activation_recovery.err.log"
+SYSTEM_STORE_LBA = 0x4800
 SUPERBLOCK_RESERVED_OFFSET = 56
+SUPERBLOCK_ACTIVATION_OFFSET = SUPERBLOCK_RESERVED_OFFSET + (9 * 8)
 SUPERBLOCK_PEER_LBA_OFFSET = SUPERBLOCK_RESERVED_OFFSET + (10 * 8)
-CORRUPT_PEER_LBA = 0
+LUNA_ACTIVATION_RECOVERY = 4
 POST_GATE_OBSERVE_SECONDS = 3.0
 
 
@@ -36,16 +37,20 @@ def find_qemu() -> str:
     raise FileNotFoundError("qemu-system-x86_64 not found. Install QEMU or add it to PATH.")
 
 
-def truncate_before_ldat(image_path: Path) -> None:
-    with image_path.open("r+b") as handle:
-        handle.truncate(DATA_STORE_LBA * 512)
-
-
-def patch_ldat_peer_contract(image_path: Path) -> None:
+def patch_u64(image_path: Path, offset: int, value: int) -> None:
     blob = bytearray(image_path.read_bytes())
-    offset = DATA_STORE_LBA * 512 + SUPERBLOCK_PEER_LBA_OFFSET
-    blob[offset:offset + 8] = struct.pack("<Q", CORRUPT_PEER_LBA)
+    struct.pack_into("<Q", blob, offset, value)
     image_path.write_bytes(blob)
+
+
+def patch_lsys_peer_contract(image_path: Path) -> None:
+    offset = SYSTEM_STORE_LBA * 512 + SUPERBLOCK_PEER_LBA_OFFSET
+    patch_u64(image_path, offset, 0)
+
+
+def patch_activation_recovery(image_path: Path) -> None:
+    offset = SYSTEM_STORE_LBA * 512 + SUPERBLOCK_ACTIVATION_OFFSET
+    patch_u64(image_path, offset, LUNA_ACTIVATION_RECOVERY)
 
 
 def run_qemu_once(
@@ -81,20 +86,18 @@ def run_qemu_once(
             encoding="utf-8",
             errors="replace",
         )
-
         try:
             deadline = time.time() + 25.0
             gate_seen_at = None
             while time.time() < deadline:
-                if log_path.exists():
-                    text = log_path.read_text(encoding="utf-8", errors="replace")
-                    if "[USER] shell ready" in text:
+                text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+                if "[USER] shell ready" in text:
+                    break
+                if any(marker in text for marker in stop_markers):
+                    if gate_seen_at is None:
+                        gate_seen_at = time.time()
+                    elif time.time() - gate_seen_at >= POST_GATE_OBSERVE_SECONDS:
                         break
-                    if any(marker in text for marker in stop_markers):
-                        if gate_seen_at is None:
-                            gate_seen_at = time.time()
-                        elif time.time() - gate_seen_at >= POST_GATE_OBSERVE_SECONDS:
-                            break
                 if proc.poll() is not None:
                     break
                 time.sleep(0.25)
@@ -121,66 +124,64 @@ def require_absent(text: str, needle: str, label: str) -> None:
 def main() -> int:
     qemu = find_qemu()
 
-    shutil.copyfile(IMAGE, LDAT_READFAIL_IMAGE)
-    truncate_before_ldat(LDAT_READFAIL_IMAGE)
-    readfail = run_qemu_once(
+    shutil.copyfile(IMAGE, LSYS_CONTRACT_IMAGE)
+    patch_lsys_peer_contract(LSYS_CONTRACT_IMAGE)
+    contract_text = run_qemu_once(
         qemu,
-        LDAT_READFAIL_IMAGE,
-        LDAT_READFAIL_LOG,
-        LDAT_READFAIL_ERR,
-        ("[SYSTEM] storage gate=recovery", "[USER] shell ready"),
+        LSYS_CONTRACT_IMAGE,
+        LSYS_CONTRACT_LOG,
+        LSYS_CONTRACT_ERR,
+        ("[SYSTEM] storage gate=fatal", "[USER] shell ready"),
     )
     for needle in (
         "[BOOT] lsys super read ok",
-        "[BOOT] ldat read fail",
-        "[DEVICE] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=recovery",
-        "[SYSTEM] Space 2 ready.",
-        "[SYSTEM] Space 12 ready.",
-        "[SYSTEM] storage gate=recovery",
+        "[BOOT] lsys contract fail",
+        "[DEVICE] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=fatal",
+        "[SYSTEM] storage gate=fatal",
     ):
-        require(readfail, needle, "ldat-readfail")
-    for forbidden in (
+        require(contract_text, needle, "lsys-contract")
+    for needle in (
+        "[SYSTEM] storage gate=recovery",
+        "[SYSTEM] driver gate=recovery",
         "[SYSTEM] Spawning PACKAGE space...",
         "[SYSTEM] Spawning UPDATE space...",
         "[SYSTEM] Spawning USER space...",
         "[UPDATE] wave ready",
         "[USER] shell ready",
-        "login required: session is locked",
     ):
-        require_absent(readfail, forbidden, "ldat-readfail")
+        require_absent(contract_text, needle, "lsys-contract")
 
-    shutil.copyfile(IMAGE, LDAT_CONTRACT_IMAGE)
-    patch_ldat_peer_contract(LDAT_CONTRACT_IMAGE)
-    contract = run_qemu_once(
+    shutil.copyfile(IMAGE, ACTIVATION_RECOVERY_IMAGE)
+    patch_activation_recovery(ACTIVATION_RECOVERY_IMAGE)
+    activation_text = run_qemu_once(
         qemu,
-        LDAT_CONTRACT_IMAGE,
-        LDAT_CONTRACT_LOG,
-        LDAT_CONTRACT_ERR,
+        ACTIVATION_RECOVERY_IMAGE,
+        ACTIVATION_RECOVERY_LOG,
+        ACTIVATION_RECOVERY_ERR,
         ("[SYSTEM] storage gate=recovery", "[USER] shell ready"),
     )
     for needle in (
         "[BOOT] lsys super read ok",
-        "[BOOT] ldat contract fail",
+        "[BOOT] native pair ok",
+        "[BOOT] activation recovery",
         "[DEVICE] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=recovery",
-        "[SYSTEM] Space 2 ready.",
-        "[SYSTEM] Space 12 ready.",
         "[SYSTEM] storage gate=recovery",
     ):
-        require(contract, needle, "ldat-contract")
-
-    for forbidden in (
+        require(activation_text, needle, "activation-recovery")
+    for needle in (
+        "[SYSTEM] storage gate=fatal",
+        "[SYSTEM] driver gate=recovery",
         "[SYSTEM] Spawning PACKAGE space...",
         "[SYSTEM] Spawning UPDATE space...",
         "[SYSTEM] Spawning USER space...",
         "[UPDATE] wave ready",
         "[USER] shell ready",
-        "login required: session is locked",
     ):
-        require_absent(contract, forbidden, "ldat-contract")
+        require_absent(activation_text, needle, "activation-recovery")
 
-    sys.stdout.write(readfail)
-    sys.stdout.write("\n=== ldat contract fail ===\n")
-    sys.stdout.write(contract)
+    sys.stdout.write(contract_text)
+    sys.stdout.write("\n=== activation recovery ===\n")
+    sys.stdout.write(activation_text)
     return 0
 
 

@@ -138,6 +138,18 @@ python .\build\run_qemu_updateapplycheck.py
 python .\build\run_qemu_fullregression.py
 ```
 
+Targeted storage failure / recovery regression path:
+
+```powershell
+python .\build\run_qemu_recoverycheck.py
+python .\build\run_qemu_lsysfailurecheck.py
+```
+
+These focused checks preserve current storage-rooted failure, activation
+recovery, and stop-before-product-space behavior. They do not replace the
+primary frozen validation set, but they are required when changes touch those
+paths.
+
 Developer ecosystem entry:
 
 ```powershell
@@ -205,6 +217,12 @@ approved post-freeze contract work.
   - `python .\build\build.py`
   - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
   - `python .\build\run_qemu_shellcheck.py`
+- Boot / storage failure / recovery / activation changes:
+  - `python .\build\build.py`
+  - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
+  - `python .\build\run_qemu_shellcheck.py`
+  - `python .\build\run_qemu_recoverycheck.py`
+  - `python .\build\run_qemu_lsysfailurecheck.py`
 - Shell-visible product behavior:
   - `python .\build\build.py`
   - `python .\build\run_qemu_shellcheck.py`
