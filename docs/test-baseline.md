@@ -41,6 +41,16 @@ the bring-up tooling expects.
 These baselines are aligned to current passing behavior and define the current
 RC3 freeze.
 
+Formal 15-space lock assertions:
+
+- formal build/release/runtime profile contains exactly 15 sovereignty spaces
+- `build/luna.ld` and generated `build/constellation.map` must agree on the
+  same 15 formal spaces
+- `DIAG`, `TEST`, and `DEBUG` may exist only as auxiliary debug/test payloads
+  and must not appear as formal spaces
+- new capabilities must be assigned inside the 15-space model rather than
+  widening the formal space table
+
 ## Ecosystem v1 Gate
 
 This gate freezes the current LunaOS ecosystem contract as of `2026-04-11`.

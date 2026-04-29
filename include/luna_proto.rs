@@ -1,3 +1,5 @@
+pub const LUNA_FORMAL_SPACE_COUNT: usize = 15;
+
 #[repr(C)]
 pub struct LunaBootView {
     pub security_gate_base: u64,
@@ -84,8 +86,6 @@ pub struct LunaManifest {
     pub program_gate_entry: u64,
     pub user_base: u64,
     pub user_boot_entry: u64,
-    pub diag_base: u64,
-    pub diag_boot_entry: u64,
     pub app_hello_base: u64,
     pub app_hello_size: u64,
     pub bootview_base: u64,

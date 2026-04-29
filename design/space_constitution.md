@@ -8,6 +8,8 @@ LunaOS is not a central operating system split into modules. LunaOS is a constel
 
 - Every core system function belongs to one of the 15 fixed spaces.
 - No additional core space may be introduced.
+- New capabilities must be assigned to one of the existing 15 spaces rather
+  than creating a new space for convenience.
 - A space must not silently absorb the responsibilities of another space.
 - Cross-space action must happen through an explicit connection.
 - `SECURITY` reviews and authorizes connections.
@@ -37,6 +39,9 @@ These names and IDs are frozen:
 15. `UPDATE` `14`
 
 `DIAG`, test payloads, sample apps, and bootstrap helpers are not spaces.
+They may exist only as auxiliary debug/test payloads and must not enter the
+formal manifest, formal layout, lifecycle dispatch, release profile, or
+required-space runtime path.
 
 ## Constitutional Model
 

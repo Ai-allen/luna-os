@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -58,6 +59,45 @@ INSTALL_UUID_HIGH = INSTALL_UUID.int >> 64
 LUNA_PROTO_VERSION = 0x00000250
 LUNA_LA_ABI_MAJOR = 1
 LUNA_LA_ABI_MINOR = 0
+FORMAL_SPACE_COUNT = 15
+FORMAL_SPACE_NAMES = [
+    "BOOT",
+    "SECURITY",
+    "DATA",
+    "LIFECYCLE",
+    "SYSTEM",
+    "PROGRAM",
+    "TIME",
+    "DEVICE",
+    "OBSERVE",
+    "NETWORK",
+    "GRAPHICS",
+    "PACKAGE",
+    "UPDATE",
+    "AI",
+    "USER",
+]
+FORMAL_SPACE_NAME_SET = frozenset(FORMAL_SPACE_NAMES)
+FORMAL_SPACE_ENUM_NAMES = frozenset(
+    {
+        "BOOT",
+        "SYSTEM",
+        "DATA",
+        "SECURITY",
+        "GRAPHICS",
+        "DEVICE",
+        "NETWORK",
+        "USER",
+        "TIME",
+        "LIFECYCLE",
+        "OBSERVABILITY",
+        "AI",
+        "PROGRAM",
+        "PACKAGE",
+        "UPDATE",
+    }
+)
+FORBIDDEN_AUXILIARY_SPACE_NAMES = frozenset({"DIAG", "TEST", "DEBUG"})
 LUNA_SDK_MAJOR = 1
 LUNA_SDK_MINOR = 0
 LUNA_PROGRAM_BUNDLE_MAGIC = 0x4C554E42
@@ -107,6 +147,96 @@ def parse_layout(path: Path) -> dict:
     return layout
 
 
+def validate_formal_space_lock(layout: dict) -> None:
+    actual_space_names = list(layout["SPACE"].keys())
+    actual_space_set = set(actual_space_names)
+    missing_spaces = sorted(FORMAL_SPACE_NAME_SET - actual_space_set)
+    extra_spaces = sorted(actual_space_set - FORMAL_SPACE_NAME_SET)
+    forbidden_spaces = sorted(FORBIDDEN_AUXILIARY_SPACE_NAMES & actual_space_set)
+    if missing_spaces or extra_spaces or forbidden_spaces or len(actual_space_names) != FORMAL_SPACE_COUNT:
+        raise RuntimeError(
+            "formal space lock violated in build/luna.ld: "
+            f"count={len(actual_space_names)} missing={missing_spaces or '-'} "
+            f"extra={extra_spaces or '-'} forbidden={forbidden_spaces or '-'}"
+        )
+
+    stack_names = list(layout["STACK"].keys())
+    stack_name_set = set(stack_names)
+    missing_stacks = sorted(FORMAL_SPACE_NAME_SET - stack_name_set)
+    extra_stacks = sorted(stack_name_set - FORMAL_SPACE_NAME_SET)
+    forbidden_stacks = sorted(FORBIDDEN_AUXILIARY_SPACE_NAMES & stack_name_set)
+    if missing_stacks or extra_stacks or forbidden_stacks or len(stack_names) != FORMAL_SPACE_COUNT:
+        raise RuntimeError(
+            "formal stack lock violated in build/luna.ld: "
+            f"count={len(stack_names)} missing={missing_stacks or '-'} "
+            f"extra={extra_stacks or '-'} forbidden={forbidden_stacks or '-'}"
+        )
+
+
+def validate_proto_space_lock(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"enum luna_space_id\s*{(?P<body>.*?)};", text, re.S)
+    if match is None:
+        raise RuntimeError("formal space lock check could not find enum luna_space_id")
+    enum_names = re.findall(r"LUNA_SPACE_([A-Z_]+)\s*=", match.group("body"))
+    enum_name_set = set(enum_names)
+    missing_names = sorted(FORMAL_SPACE_ENUM_NAMES - enum_name_set)
+    extra_names = sorted(enum_name_set - FORMAL_SPACE_ENUM_NAMES)
+    forbidden_names = sorted(FORBIDDEN_AUXILIARY_SPACE_NAMES & enum_name_set)
+    if missing_names or extra_names or forbidden_names or len(enum_names) != FORMAL_SPACE_COUNT:
+        raise RuntimeError(
+            "formal space lock violated in include/luna_proto.h: "
+            f"count={len(enum_names)} missing={missing_names or '-'} "
+            f"extra={extra_names or '-'} forbidden={forbidden_names or '-'}"
+        )
+
+
+def validate_rust_proto_space_lock(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    count_match = re.search(r"pub const LUNA_FORMAL_SPACE_COUNT:\s*usize\s*=\s*(?P<count>\d+)\s*;", text)
+    if count_match is None or int(count_match.group("count")) != FORMAL_SPACE_COUNT:
+        actual = count_match.group("count") if count_match is not None else "missing"
+        raise RuntimeError(
+            "formal space lock violated in include/luna_proto.rs: "
+            f"count={actual} expected={FORMAL_SPACE_COUNT}"
+        )
+
+    const_names = re.findall(r"pub const LUNA_SPACE_([A-Z_]+)\s*:", text)
+    if const_names:
+        const_name_set = set(const_names)
+        missing_names = sorted(FORMAL_SPACE_ENUM_NAMES - const_name_set)
+        extra_names = sorted(const_name_set - FORMAL_SPACE_ENUM_NAMES)
+        forbidden_names = sorted(FORBIDDEN_AUXILIARY_SPACE_NAMES & const_name_set)
+        if missing_names or extra_names or forbidden_names or len(const_names) != FORMAL_SPACE_COUNT:
+            raise RuntimeError(
+                "formal space lock violated in include/luna_proto.rs: "
+                f"count={len(const_names)} missing={missing_names or '-'} "
+                f"extra={extra_names or '-'} forbidden={forbidden_names or '-'}"
+            )
+
+
+def validate_constellation_map(path: Path) -> None:
+    section_names = [
+        match.group("name")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if (match := re.match(r"^\[(?P<name>[^\]]+)\]$", line.strip()))
+    ]
+    formal_sections = [
+        name for name in section_names
+        if not name.startswith("APP.") and name != "SCRIPT"
+    ]
+    formal_section_set = set(formal_sections)
+    missing_sections = sorted(FORMAL_SPACE_NAME_SET - formal_section_set)
+    extra_sections = sorted(formal_section_set - FORMAL_SPACE_NAME_SET)
+    forbidden_sections = sorted(FORBIDDEN_AUXILIARY_SPACE_NAMES & formal_section_set)
+    if missing_sections or extra_sections or forbidden_sections or len(formal_sections) != FORMAL_SPACE_COUNT:
+        raise RuntimeError(
+            "formal constellation map lock violated: "
+            f"count={len(formal_sections)} missing={missing_sections or '-'} "
+            f"extra={extra_sections or '-'} forbidden={forbidden_sections or '-'}"
+        )
+
+
 def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
     print(f"[build] {' '.join(cmd)}")
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
@@ -128,7 +258,7 @@ def place(stage: bytearray, stage_base: int, base: int, blob: bytes) -> None:
 
 def check_stage_layout(layout: dict, blobs: dict[str, bytes], app_blobs: dict[str, bytes], manifest_blob: bytes) -> None:
     regions: list[tuple[int, int, str]] = []
-    for name in ["BOOT", "SECURITY", "DATA", "LIFECYCLE", "SYSTEM", "PROGRAM", "TIME", "DEVICE", "OBSERVE", "NETWORK", "GRAPHICS", "PACKAGE", "UPDATE", "AI", "USER", "DIAG"]:
+    for name in FORMAL_SPACE_NAMES:
         base = layout["SPACE"][name]
         regions.append((base, base + len(blobs[name]), f"SPACE {name}"))
     for name in ["GUARD", "HELLO", "FILES", "NOTES", "CONSOLE"]:
@@ -374,8 +504,6 @@ def manifest_entries(layout: dict, labels: dict[str, dict], app_sizes: dict[str,
         ("program_gate_entry", labels["PROGRAM"]["program_entry_gate"]),
         ("user_base", layout["SPACE"]["USER"]),
         ("user_boot_entry", labels["USER"]["user_entry_boot"]),
-        ("diag_base", layout["SPACE"]["DIAG"]),
-        ("diag_boot_entry", labels["DIAG"]["test_entry_boot"]),
         ("app_hello_base", layout["APP"]["HELLO"]),
         ("app_hello_size", app_sizes["HELLO"]),
         ("bootview_base", layout["BOOTVIEW"]),
@@ -1276,7 +1404,7 @@ def compose_stage_bundle(
 
     stage_base = layout["IMAGE_BASE"]
     stage = bytearray()
-    for name in ["BOOT", "SECURITY", "DATA", "LIFECYCLE", "SYSTEM", "PROGRAM", "TIME", "DEVICE", "OBSERVE", "NETWORK", "GRAPHICS", "PACKAGE", "UPDATE", "AI", "USER", "DIAG"]:
+    for name in FORMAL_SPACE_NAMES:
         place(stage, stage_base, layout["SPACE"][name], blobs[name])
     for key in ["GUARD", "HELLO", "FILES", "NOTES", "CONSOLE"]:
         place(stage, stage_base, layout["APP"][key], app_blobs[key])
@@ -1397,6 +1525,9 @@ def main() -> None:
     OBJ_DIR.mkdir(exist_ok=True)
     APP_OUT_DIR.mkdir(exist_ok=True)
     layout = parse_layout(BUILD_DIR / "luna.ld")
+    validate_formal_space_lock(layout)
+    validate_proto_space_lock(ROOT / "include" / "luna_proto.h")
+    validate_rust_proto_space_lock(ROOT / "include" / "luna_proto.rs")
     generate_layout_constants(layout)
     tools, env = detect_toolchain()
 
@@ -1420,7 +1551,6 @@ def main() -> None:
         "UPDATE": "update",
         "AI": "ai",
         "USER": "user",
-        "DIAG": "test",
     }.items():
         if name == "GRAPHICS":
             blobs[name], labels[name] = build_c_space_multi(
@@ -1537,7 +1667,6 @@ def main() -> None:
         ("UPDATE", labels["UPDATE"]),
         ("AI", labels["AI"]),
         ("USER", labels["USER"]),
-        ("DIAG", labels["DIAG"]),
         ("APP.HELLO", labels["APP.HELLO"]),
         ("APP.GUARD", labels["APP.GUARD"]),
         ("APP.FILES", labels["APP.FILES"]),
@@ -1545,6 +1674,7 @@ def main() -> None:
         ("APP.CONSOLE", labels["APP.CONSOLE"]),
         ("SCRIPT", {"SESSION": layout["SCRIPT"]["SESSION"]["base"]}),
     ])
+    validate_constellation_map(BUILD_DIR / "constellation.map")
 
     print(f"[build] image: {BUILD_DIR / 'lunaos.img'}")
     print(f"[build] uefi: {efi_dir / 'BOOTX64.EFI'}")
@@ -1552,7 +1682,7 @@ def main() -> None:
     print(f"[build] disk: {BUILD_DIR / 'lunaos_disk.img'}")
     print(f"[build] iso: {BUILD_DIR / 'lunaos_installer.iso'}")
     print(f"[build] sectors: {stage_sectors}")
-    for name in ["BOOT", "SECURITY", "DATA", "LIFECYCLE", "SYSTEM", "PROGRAM", "TIME", "DEVICE", "OBSERVE", "NETWORK", "GRAPHICS", "PACKAGE", "UPDATE", "AI", "USER", "DIAG"]:
+    for name in FORMAL_SPACE_NAMES:
         print(f"[build] {name.lower()} bytes: {len(blobs[name])}")
     print(f"[build] guard.la bytes: {len((APP_OUT_DIR / 'guard.la').read_bytes())}")
     print(f"[build] guard.luna bytes: {len(app_blobs['GUARD'])}")

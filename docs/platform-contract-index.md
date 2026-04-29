@@ -141,6 +141,34 @@ Primary modules:
 - `include/luna_proto.rs`
 - `include/luna_la_abi.h`
 
+## 15 Spaces Lock
+
+Status:
+
+- formal runtime ownership is locked to 15 sovereignty spaces
+- debug/test/diagnostic payloads are auxiliary only and are not formal spaces
+- build and constellation-map generation must fail if a 16th formal space
+  enters the release/runtime profile
+
+Primary specs:
+
+- [`AGENTS.md`](/abs/path/C:/Users/AI/lunaos/AGENTS.md)
+- [`design/space_constitution.md`](/abs/path/C:/Users/AI/lunaos/design/space_constitution.md)
+- [`docs/test-baseline.md`](/abs/path/C:/Users/AI/lunaos/docs/test-baseline.md)
+
+Primary gates:
+
+- `python .\build\build.py`
+
+Primary modules:
+
+- `build/build.py`
+- `build/luna.ld`
+- `include/luna_proto.h`
+- `include/luna_proto.rs`
+- `lifecycle/src/main.rs`
+- `system/src/main.rs`
+
 ## Hardware / Firmware Matrix
 
 Status:

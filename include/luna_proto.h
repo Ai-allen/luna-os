@@ -52,7 +52,10 @@ static inline void *luna_memset(void *dest, int value, size_t len) {
 #define LUNA_NETWORK_PACKET_BYTES 256u
 #define LUNA_PACKAGE_CAPACITY 8u
 #define LUNA_DESKTOP_ENTRY_CAPACITY 8u
+#define LUNA_FORMAL_SPACE_COUNT 15u
 
+/* Formal sovereignty spaces are frozen to 15 IDs. Auxiliary payloads must
+ * not enter this enum. */
 enum luna_space_id {
     LUNA_SPACE_BOOT = 0,
     LUNA_SPACE_SYSTEM = 1,
@@ -70,8 +73,6 @@ enum luna_space_id {
     LUNA_SPACE_PACKAGE = 13,
     LUNA_SPACE_UPDATE = 14,
 };
-
-#define LUNA_DIAG_TEST 16u
 
 enum luna_gate_opcode {
     LUNA_GATE_REQUEST_CAP = 1,
@@ -1442,8 +1443,6 @@ struct luna_manifest {
     uint64_t program_gate_entry;
     uint64_t user_base;
     uint64_t user_boot_entry;
-    uint64_t diag_base;
-    uint64_t diag_boot_entry;
     uint64_t app_hello_base;
     uint64_t app_hello_size;
     uint64_t bootview_base;

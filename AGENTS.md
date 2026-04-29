@@ -95,6 +95,17 @@ The canonical space roles are:
 - `USER`: user/session/product-facing consumption
 - `AI`: AI capability consumption and collaboration
 
+`DIAG` is not a formal sovereignty space. Diagnostic or regression-only payloads
+must stay auxiliary, debug/test-profile only, and out of release manifests,
+required-space gating, installer dependencies, and recovery decisions.
+
+The formal runtime profile is permanently locked to these 15 spaces. New
+capabilities must be assigned inside the existing 15-space model; do not solve
+ownership gaps by creating a 16th formal space. Any new `SPACE` name entering
+`build/build.py`, `build/luna.ld`, `include/luna_proto.h`,
+`include/luna_proto.rs`, manifest generation, or lifecycle/system dispatch is
+an architectural blocker that must be corrected before mainline work continues.
+
 Hard ownership rules:
 
 - LaSQL ownership belongs to `DATA`; `PACKAGE`, `USER`, and `OBSERVABILITY`
