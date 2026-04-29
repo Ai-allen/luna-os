@@ -15,6 +15,10 @@ LOG1_PATH = ROOT / "qemu_updateapplycheck_boot1.log"
 ERR1_PATH = ROOT / "qemu_updateapplycheck_boot1.err.log"
 LOG2_PATH = ROOT / "qemu_updateapplycheck_boot2.log"
 ERR2_PATH = ROOT / "qemu_updateapplycheck_boot2.err.log"
+LOG3_PATH = ROOT / "qemu_updateapplycheck_boot3.log"
+ERR3_PATH = ROOT / "qemu_updateapplycheck_boot3.err.log"
+LOG4_PATH = ROOT / "qemu_updateapplycheck_boot4.log"
+ERR4_PATH = ROOT / "qemu_updateapplycheck_boot4.err.log"
 BOOT_SECTOR_BYTES = 512
 SESSION_MAGIC = 0x54504353
 DEV_BUNDLE_STAGE_MAGIC = 0x4244564C
@@ -90,14 +94,22 @@ def pack_devloop_bundle() -> bytes:
     return output.read_bytes()
 
 
-def run_vm(image_path: Path, log_path: Path, err_path: Path, stop_markers: list[str], timeout_s: float) -> str:
+def run_vm(
+    image_path: Path,
+    log_path: Path,
+    err_path: Path,
+    stop_markers: list[str],
+    timeout_s: float,
+) -> str:
     qemu = find_qemu()
     if log_path.exists():
         log_path.unlink()
     if err_path.exists():
         err_path.unlink()
 
-    with log_path.open("w", encoding="utf-8", errors="replace") as stdout_file, err_path.open("w", encoding="utf-8", errors="replace") as stderr_file:
+    with log_path.open("w", encoding="utf-8", errors="replace") as stdout_file, err_path.open(
+        "w", encoding="utf-8", errors="replace"
+    ) as stderr_file:
         proc = subprocess.Popen(
             [
                 qemu,
@@ -135,6 +147,18 @@ def run_vm(image_path: Path, log_path: Path, err_path: Path, stop_markers: list[
     return log_path.read_text(encoding="utf-8", errors="replace")
 
 
+def require_all(text: str, label: str, needles: tuple[str, ...]) -> None:
+    for needle in needles:
+        if needle not in text:
+            raise RuntimeError(f"{label} missing expected output: {needle}")
+
+
+def require_absent(text: str, label: str, needles: tuple[str, ...]) -> None:
+    for needle in needles:
+        if needle in text:
+            raise RuntimeError(f"{label} observed forbidden output: {needle}")
+
+
 def main() -> int:
     bundle = pack_devloop_bundle()
     CHECK_IMAGE.write_bytes(IMAGE.read_bytes())
@@ -143,64 +167,161 @@ def main() -> int:
         b"setup.init luna dev secret\r\n"
         b"package.install sample\r\n"
         b"update.status\r\n"
-        b"update.apply\r\n"
-        b"update.status\r\n"
     )
     patch_session_script(CHECK_IMAGE, boot1_commands, bundle)
     boot1 = run_vm(
         CHECK_IMAGE,
         LOG1_PATH,
         ERR1_PATH,
-        ["package.install ok", "audit update.apply start", "update action=check-only"],
-        25.0,
+        ["package.install ok", "update action=apply-ready"],
+        30.0,
     )
 
     boot2_commands = (
         b"login dev secret\r\n"
         b"update.status\r\n"
-        b"list-apps\r\n"
-        b"run sample\r\n"
+        b"update.apply\r\n"
     )
     patch_session_script(CHECK_IMAGE, boot2_commands)
     boot2 = run_vm(
         CHECK_IMAGE,
         LOG2_PATH,
         ERR2_PATH,
-        ["update action=check-only", "launch request: sample.luna"],
-        20.0,
+        ["update.apply ok"],
+        50.0,
     )
 
-    for needle in (
-        "package.install sample",
-        "package.install ok",
-        "audit package.install approved=SECURITY",
-        "audit package.install persisted=DATA authority=PACKAGE",
-        "update.status",
-        "update state=idle current=0 target=0",
-        "update action=check-only",
-        "audit update.apply start",
-        "update.apply noop",
-        "update.result state=idle current=0 target=0",
-    ):
-        if needle not in boot1:
-            raise RuntimeError(f"updateapply boot1 missing expected output: {needle}")
+    boot3_commands = b""
+    patch_session_script(CHECK_IMAGE, boot3_commands)
+    boot3 = run_vm(
+        CHECK_IMAGE,
+        LOG3_PATH,
+        ERR3_PATH,
+        ["audit update.apply activation=LSYS", "audit update.apply persisted=DATA authority=UPDATE"],
+        25.0,
+    )
 
-    for needle in (
-        "login ok: session active",
-        "update.status",
-        "update state=idle current=0 target=0",
-        "update action=check-only",
-        "list-apps",
-        "sample.luna",
-        "run sample",
-        "launch request: sample.luna",
-        "apps 1-5 or F/N/G/C/H",
-    ):
-        if needle not in boot2:
-            raise RuntimeError(f"updateapply boot2 missing expected output: {needle}")
+    boot4_commands = (
+        b"login dev secret\r\n"
+        b"update.status\r\n"
+        b"list-apps\r\n"
+        b"run sample\r\n"
+    )
+    patch_session_script(CHECK_IMAGE, boot4_commands)
+    boot4 = run_vm(
+        CHECK_IMAGE,
+        LOG4_PATH,
+        ERR4_PATH,
+        ["update action=applied", "launch request: sample.luna"],
+        40.0,
+    )
+
+    require_all(
+        boot1,
+        "updateapply boot1",
+        (
+            "package.install sample",
+            "package.install ok",
+            "audit package.install approved=SECURITY",
+            "audit package.install persisted=DATA authority=PACKAGE",
+            "update.status",
+            "update mode=run action=apply-ready",
+            "update state=staged current=1 target=2",
+            "update action=apply-ready",
+        ),
+    )
+    require_absent(
+        boot1,
+        "updateapply boot1",
+        (
+            "update.apply fail",
+            "update.apply ok",
+        ),
+    )
+
+    require_all(
+        boot2,
+        "updateapply boot2",
+        (
+            "login ok: session active",
+            "update.status",
+            "update mode=run action=apply-ready",
+            "update state=staged current=1 target=2",
+            "update.apply",
+            "audit update.apply start",
+            "audit package.remove approved=SECURITY",
+            "audit package.remove persisted=DATA authority=PACKAGE",
+            "audit package.install approved=SECURITY",
+            "audit package.install persisted=DATA authority=PACKAGE",
+            "audit update.apply approved=SECURITY",
+            "audit update.apply activation=COMMITTED",
+            "update.apply ok",
+            "update.result state=committed current=1 target=2",
+        ),
+    )
+    require_absent(
+        boot2,
+        "updateapply boot2",
+        (
+            "update.apply fail",
+            "audit update.apply denied reason=package-chain",
+            "audit update.apply denied reason=txn-log",
+        ),
+    )
+
+    require_all(
+        boot3,
+        "updateapply boot3",
+        (
+            "audit update.apply activation=LSYS",
+            "audit update.apply persisted=DATA authority=UPDATE",
+        ),
+    )
+    require_absent(
+        boot3,
+        "updateapply boot3",
+        (
+            "update.apply fail",
+            "audit update.apply denied reason=package-chain",
+            "audit update.apply denied reason=txn-log",
+            "login ok: session active",
+            "[USER] shell ready",
+        ),
+    )
+
+    require_all(
+        boot4,
+        "updateapply boot4",
+        (
+            "login ok: session active",
+            "update.status",
+            "update mode=read-only action=applied",
+            "update state=active current=2 target=2",
+            "update action=applied",
+            "list-apps",
+            "sample.luna",
+            "run sample",
+            "launch request: sample.luna",
+            "apps 1-5 or F/N/G/C/H",
+        ),
+    )
+    require_absent(
+        boot4,
+        "updateapply boot4",
+        (
+            "update.apply fail",
+            "audit update.apply denied reason=package-chain",
+            "audit update.apply denied reason=txn-log",
+        ),
+    )
 
     sys.stdout.write(boot1)
+    sys.stdout.write("\n--- APPLY COMMIT ---\n")
     sys.stdout.write(boot2)
+    sys.stdout.write("\n--- ACTIVATION REBOOT ---\n")
+    sys.stdout.write(boot3)
+    sys.stdout.write("\n--- ACTIVATION CONFIRM ---\n")
+    sys.stdout.write(boot4)
     return 0
 
 

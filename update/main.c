@@ -7,7 +7,8 @@
 #define LUNA_DATA_OBJECT_TYPE_PACKAGE_STATE 0x504B4753u
 #define LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL 0x504B4749u
 #define LUNA_PACKAGE_STATE_MAGIC 0x504B4753u
-#define LUNA_PACKAGE_STATE_VERSION 4u
+#define LUNA_PACKAGE_STATE_VERSION 5u
+#define LUNA_PACKAGE_STATE_VERSION_V4 4u
 #define LUNA_PACKAGE_INSTALL_MAGIC 0x504B4749u
 #define LUNA_PACKAGE_INSTALL_VERSION 1u
 #define LUNA_PACKAGE_UPDATE_TXN_MAGIC 0x55505458u
@@ -57,6 +58,8 @@ static volatile struct luna_manifest *g_manifest = 0;
 static struct luna_bootview g_bootview = {0};
 static uint8_t g_update_bundle_stage[16384];
 
+static void device_write(const char *text);
+
 #undef memcpy
 #undef memset
 
@@ -78,6 +81,20 @@ void *memset(void *dest, int value, size_t len) {
 }
 
 struct luna_package_state_record {
+    uint32_t magic;
+    uint32_t version;
+    struct luna_object_ref installed_apps_set;
+    struct luna_object_ref install_records_set;
+    struct luna_object_ref app_index_set;
+    struct luna_object_ref trusted_source_set;
+    struct luna_object_ref trusted_signer_set;
+    struct luna_object_ref update_txn_log_set;
+    uint64_t next_txn_id;
+    struct luna_object_ref update_txn_object;
+    struct luna_object_ref rollback_refs_set;
+};
+
+struct luna_package_state_record_v4 {
     uint32_t magic;
     uint32_t version;
     struct luna_object_ref installed_apps_set;
@@ -131,8 +148,16 @@ struct luna_bundle_header {
     uint64_t integrity_check;
     uint64_t header_bytes;
     uint64_t entry_offset;
+    uint64_t signer_id;
+    uint64_t signature_check;
     uint32_t capability_count;
     uint32_t flags;
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    uint16_t sdk_major;
+    uint16_t sdk_minor;
+    uint32_t min_proto_version;
+    uint32_t max_proto_version;
     char name[16];
     uint64_t capability_keys[4];
 };
@@ -210,6 +235,39 @@ static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint6
     gate->target_gate = target_gate;
     ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
     return gate->status;
+}
+
+static int govern_storage_state(uint32_t target_state) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    struct luna_governance_query query;
+    zero_bytes(&query, sizeof(query));
+    query.action = LUNA_GOVERN_MOUNT;
+    query.result_state = target_state;
+    query.mode = g_bootview.system_mode;
+    query.install_low = g_bootview.install_uuid_low;
+    query.install_high = g_bootview.install_uuid_high;
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 47;
+    gate->opcode = LUNA_GATE_GOVERN;
+    gate->caller_space = LUNA_SPACE_UPDATE;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&query;
+    gate->buffer_size = sizeof(query);
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    g_bootview.volume_state = query.result_state;
+    g_bootview.system_mode = query.mode;
+    return gate->status == LUNA_GATE_OK &&
+           query.result_state != LUNA_VOLUME_FATAL_INCOMPATIBLE &&
+           query.result_state != LUNA_VOLUME_FATAL_UNRECOVERABLE;
+}
+
+static void route_storage_failure(const char *reason) {
+    device_write(reason);
+    (void)govern_storage_state(LUNA_VOLUME_RECOVERY_REQUIRED);
+    if (g_bootview.system_mode == LUNA_MODE_RECOVERY) {
+        device_write("audit update.apply storage=recovery\r\n");
+    } else if (g_bootview.system_mode == LUNA_MODE_READONLY) {
+        device_write("audit update.apply storage=readonly\r\n");
+    }
 }
 
 static void device_write(const char *text) {
@@ -473,6 +531,52 @@ static int package_remove_name(const char *name) {
     return gate->status == LUNA_PACKAGE_OK;
 }
 
+static uint32_t security_trust_eval_bundle(struct luna_bundle_header *bundle, void *blob, uint64_t blob_size, struct luna_trust_eval_request *out_request) {
+    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
+    struct luna_trust_eval_request request;
+
+    if (bundle == 0 || blob == 0 || blob_size == 0u) {
+        return LUNA_GATE_DENIED;
+    }
+
+    zero_bytes(&request, sizeof(request));
+    request.flags = bundle->flags;
+    request.abi_major = bundle->abi_major;
+    request.abi_minor = bundle->abi_minor;
+    request.sdk_major = bundle->sdk_major;
+    request.sdk_minor = bundle->sdk_minor;
+    request.bundle_id = bundle->bundle_id;
+    request.source_id = bundle->source_id;
+    request.signer_id = bundle->signer_id;
+    request.app_version = bundle->app_version;
+    request.integrity_check = bundle->integrity_check;
+    request.header_bytes = bundle->header_bytes;
+    request.entry_offset = bundle->entry_offset;
+    request.signature_check = bundle->signature_check;
+    request.blob_addr = (uint64_t)(uintptr_t)blob;
+    request.blob_size = blob_size;
+    request.capability_count = bundle->capability_count;
+    request.min_proto_version = bundle->min_proto_version;
+    request.max_proto_version = bundle->max_proto_version;
+    memcpy(request.name, bundle->name, sizeof(request.name));
+    memcpy(request.capability_keys, bundle->capability_keys, sizeof(request.capability_keys));
+
+    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
+    gate->sequence = 56;
+    gate->opcode = LUNA_GATE_TRUST_EVAL;
+    gate->caller_space = LUNA_SPACE_UPDATE;
+    gate->domain_key = LUNA_CAP_PACKAGE_INSTALL;
+    gate->cid_low = g_package_install_cid.low;
+    gate->cid_high = g_package_install_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&request;
+    gate->buffer_size = sizeof(request);
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
+    if (out_request != 0) {
+        memcpy(out_request, &request, sizeof(request));
+    }
+    return gate->status;
+}
+
 static int current_target_install(struct luna_package_install_record *out_record) {
     return load_package_state() && find_install_record_by_name(LUNA_UPDATE_TARGET_NAME, out_record);
 }
@@ -485,6 +589,7 @@ static int prepare_candidate_bundle(
 ) {
     struct luna_package_install_record current;
     struct luna_bundle_header *bundle = 0;
+    struct luna_trust_eval_request trust;
     uint64_t size = 0u;
     uint64_t content_size = 0u;
     void *buffer = g_update_bundle_stage;
@@ -502,10 +607,20 @@ static int prepare_candidate_bundle(
     if (bundle->magic != LUNA_PROGRAM_BUNDLE_MAGIC || bundle->version != LUNA_PROGRAM_BUNDLE_VERSION) {
         return 0;
     }
+    if (bundle->header_bytes < sizeof(struct luna_bundle_header) ||
+        bundle->entry_offset < bundle->header_bytes ||
+        bundle->entry_offset >= content_size) {
+        return 0;
+    }
     if (!names_equal(bundle->name, LUNA_UPDATE_TARGET_NAME)) {
         return 0;
     }
     bundle->app_version = current.app_version + 1u;
+    if (security_trust_eval_bundle(bundle, buffer, content_size, &trust) != LUNA_GATE_OK) {
+        return 0;
+    }
+    bundle->integrity_check = trust.result_integrity;
+    bundle->signature_check = trust.result_signature;
     if (out_current != 0) {
         *out_current = current;
     }
@@ -527,7 +642,11 @@ static int persist_new_txn(struct luna_package_update_txn_record *txn) {
         return 0;
     }
     if (txn->txn_id == 0u) {
+        struct luna_package_update_txn_record latest;
         txn->txn_id = g_package_state.next_txn_id == 0u ? 1u : g_package_state.next_txn_id;
+        if (load_latest_update_txn(&latest) && latest.txn_id >= txn->txn_id) {
+            txn->txn_id = latest.txn_id + 1u;
+        }
         g_package_state.next_txn_id = txn->txn_id + 1u;
     }
     txn->install_uuid_low = g_bootview.install_uuid_low;
@@ -556,7 +675,7 @@ static int mark_committed_txn_active(void) {
         return 1;
     }
     if (!load_install_contract(&system_super, &data_super)) {
-        device_write("audit update.apply denied reason=contract\r\n");
+        route_storage_failure("audit update.apply denied reason=contract\r\n");
         txn.state = LUNA_UPDATE_TXN_STATE_FAILED;
         return persist_update_txn(&txn);
     }
@@ -568,16 +687,21 @@ static int mark_committed_txn_active(void) {
         system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] == LUNA_ACTIVATION_COMMITTED) {
         system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] = LUNA_ACTIVATION_ACTIVE;
         if (!save_store_super(g_bootview.system_store_lba, &system_super)) {
-            device_write("audit update.apply denied reason=activation-write\r\n");
+            route_storage_failure("audit update.apply denied reason=activation-write\r\n");
             txn.state = LUNA_UPDATE_TXN_STATE_FAILED;
             return persist_update_txn(&txn);
         }
         txn.state = LUNA_UPDATE_TXN_STATE_ACTIVATED;
         txn.current_version = current.app_version;
         txn.activation_state = LUNA_ACTIVATION_ACTIVE;
+        g_package_state.update_txn_object = g_latest_txn_ref;
+        if (!persist_update_txn(&txn)) {
+            route_storage_failure("audit update.apply denied reason=txn-log\r\n");
+            return 0;
+        }
         device_write("audit update.apply activation=LSYS\r\n");
         device_write("audit update.apply persisted=DATA authority=UPDATE\r\n");
-        return persist_update_txn(&txn);
+        return 1;
     }
     device_write("audit update.apply denied reason=activation-mismatch\r\n");
     txn.state = LUNA_UPDATE_TXN_STATE_FAILED;
@@ -587,25 +711,57 @@ static int mark_committed_txn_active(void) {
 static int load_package_state(void) {
     struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
     uint32_t count = 0u;
+    uint64_t best_high = 0u;
+    int found = 0;
     if (data_gather_set(g_data_gather_cid, (struct luna_object_ref){0u, 0u}, refs, sizeof(refs), &count) != LUNA_DATA_OK) {
         return 0;
     }
     for (uint32_t i = 0u; i < count; ++i) {
         struct luna_package_state_record state;
+        struct luna_package_state_record_v4 legacy_v4;
         uint64_t size = 0u;
         uint64_t content_size = 0u;
         zero_bytes(&state, sizeof(state));
         if (data_draw_span(g_data_draw_cid, refs[i], 0u, &state, sizeof(state), &size, &content_size) != LUNA_DATA_OK) {
             continue;
         }
-        if (size < sizeof(state) || state.magic != LUNA_PACKAGE_STATE_MAGIC || state.version != LUNA_PACKAGE_STATE_VERSION) {
+        if (state.magic != LUNA_PACKAGE_STATE_MAGIC) {
             continue;
         }
+        if (state.version == LUNA_PACKAGE_STATE_VERSION && size >= sizeof(state)) {
+            if (found && refs[i].high < best_high) {
+                continue;
+            }
+            g_package_state_object = refs[i];
+            g_package_state = state;
+            best_high = refs[i].high;
+            found = 1;
+            continue;
+        }
+        if (state.version != LUNA_PACKAGE_STATE_VERSION_V4 || size < sizeof(legacy_v4)) {
+            continue;
+        }
+        if (found && refs[i].high < best_high) {
+            continue;
+        }
+        memcpy(&legacy_v4, &state, sizeof(legacy_v4));
+        zero_bytes(&g_package_state, sizeof(g_package_state));
+        g_package_state.magic = legacy_v4.magic;
+        g_package_state.version = LUNA_PACKAGE_STATE_VERSION;
+        g_package_state.installed_apps_set = legacy_v4.installed_apps_set;
+        g_package_state.install_records_set = legacy_v4.install_records_set;
+        g_package_state.app_index_set = legacy_v4.app_index_set;
+        g_package_state.trusted_source_set = legacy_v4.trusted_source_set;
+        g_package_state.trusted_signer_set = (struct luna_object_ref){0u, 0u};
+        g_package_state.update_txn_log_set = legacy_v4.update_txn_log_set;
+        g_package_state.next_txn_id = legacy_v4.next_txn_id;
+        g_package_state.update_txn_object = legacy_v4.update_txn_object;
+        g_package_state.rollback_refs_set = legacy_v4.rollback_refs_set;
         g_package_state_object = refs[i];
-        g_package_state = state;
-        return 1;
+        best_high = refs[i].high;
+        found = 1;
     }
-    return 0;
+    return found;
 }
 
 static int persist_package_state(void) {
@@ -791,7 +947,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
         }
         device_write("audit update.apply start\r\n");
         if (!load_install_contract(&system_super, &data_super)) {
-            device_write("audit update.apply denied reason=contract\r\n");
+            route_storage_failure("audit update.apply denied reason=contract\r\n");
             gate->status = LUNA_UPDATE_ERR_INVALID_CAP;
             return;
         }
@@ -812,7 +968,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
             return;
         }
         if (!package_remove_name(LUNA_UPDATE_TARGET_NAME) || !package_install_blob(bundle, bundle_size)) {
-            device_write("audit update.apply denied reason=package-chain\r\n");
+            route_storage_failure("audit update.apply denied reason=package-chain\r\n");
             gate->current_version = current.app_version;
             gate->target_version = target_version;
             gate->flags = LUNA_UPDATE_TXN_STATE_FAILED;
@@ -831,7 +987,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
         copy_name16(txn.name, LUNA_UPDATE_TARGET_NAME);
         system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] = LUNA_ACTIVATION_COMMITTED;
         if (!save_store_super(g_bootview.system_store_lba, &system_super)) {
-            device_write("audit update.apply denied reason=lsys-commit\r\n");
+            route_storage_failure("audit update.apply denied reason=lsys-commit\r\n");
             gate->current_version = current.app_version;
             gate->target_version = target_version;
             gate->flags = LUNA_UPDATE_TXN_STATE_FAILED;
@@ -839,7 +995,23 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
             return;
         }
         if (!persist_new_txn(&txn)) {
-            device_write("audit update.apply denied reason=txn-log\r\n");
+            struct luna_package_update_txn_record committed_txn;
+            if (load_package_state() &&
+                load_latest_update_txn(&committed_txn) &&
+                committed_txn.state == LUNA_UPDATE_TXN_STATE_COMMITTED &&
+                committed_txn.current_version == current.app_version &&
+                committed_txn.target_version == target_version) {
+                g_package_state.update_txn_object = g_latest_txn_ref;
+                (void)persist_package_state();
+                device_write("audit update.apply approved=SECURITY\r\n");
+                device_write("audit update.apply activation=COMMITTED\r\n");
+                gate->current_version = committed_txn.current_version;
+                gate->target_version = committed_txn.target_version;
+                gate->flags = committed_txn.state;
+                gate->status = LUNA_UPDATE_OK;
+                return;
+            }
+            route_storage_failure("audit update.apply denied reason=txn-log\r\n");
             gate->current_version = current.app_version;
             gate->target_version = target_version;
             gate->flags = LUNA_UPDATE_TXN_STATE_FAILED;

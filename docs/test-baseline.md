@@ -78,7 +78,8 @@ Frozen contract assertions:
 - `PACKAGE` remove must emit `audit package.remove approved=SECURITY`
   and `audit package.remove persisted=DATA authority=PACKAGE`
 - `update.apply` automation must reflect the current real behavior:
-  audit start, `check-only`, and noop/result visibility when no target is staged
+  staged `apply-ready`, SECURITY-approved package replacement, COMMITTED
+  activation, LSYS activation on reboot, and final `applied` visibility
 - acceptance must not depend on legacy `sample -> console.luna` remapping
   or legacy package/install success semantics
 
@@ -275,11 +276,16 @@ Frozen contract assertions:
 
 - `package.install sample` must succeed under the current ecosystem contract.
 - `audit update.apply start` must appear.
-- `update.status` must report the current visible state.
-- `update action=check-only` must appear when no staged target exists.
-- `update.apply noop` and `update.result state=idle current=0 target=0` must
-  reflect the current minimal update contract.
-- second boot must retain the installed `sample.luna` and allow `run sample`.
+- first boot must report `update mode=run action=apply-ready` and
+  `update state=staged current=1 target=2`.
+- apply boot must emit SECURITY-approved remove/install audits,
+  `audit update.apply activation=COMMITTED`, and
+  `update.result state=committed current=1 target=2`.
+- activation reboot must emit `audit update.apply activation=LSYS` and
+  `audit update.apply persisted=DATA authority=UPDATE` before product spaces.
+- final confirmation must report `update mode=read-only action=applied`,
+  `update state=active current=2 target=2`, retain `sample.luna`, and allow
+  `run sample`.
 
 ## inboundcheck Baseline
 
