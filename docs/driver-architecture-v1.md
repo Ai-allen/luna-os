@@ -210,6 +210,19 @@ No driver may become active merely because `DEVICE` found hardware.
 - when a missing driver is fatal, degraded, or observational
 - retry, quarantine, rollback, and recovery transitions
 - whether later spaces may start after a driver outcome
+- stable publication of `DEVICE` lifecycle flags before later product spaces
+  consume the platform
+
+`SYSTEM` must consume the published `DEVICE` lifecycle state to:
+
+- mark device capability as active vs degraded in the platform graph
+- distinguish degraded continuation from recovery-required bring-up
+- apply storage recovery actions through `SECURITY`-governed mount floors before
+  `DATA` replay/repair/write paths begin
+- publish degraded downstream space state when display/input/network/storage
+  fallback actions are active
+- stop later product-space expansion when the published driver state requires
+  recovery
 
 ### OBSERVABILITY Participation
 
@@ -217,7 +230,13 @@ No driver may become active merely because `DEVICE` found hardware.
 
 - probe start and result
 - chosen driver identity
+- selection basis and normalized firmware-handoff / PCI evidence for the
+  chosen path
+- structured blocker classification and recovery hint for the chosen driver
+  family
+- execution summary for recovery actions that `SYSTEM` actually applied
 - approval or denial by `SECURITY`
+- lifecycle consequence for the chosen outcome
 - activation success
 - degraded continuation
 - rollback, quarantine, reject, and recovery events
@@ -235,6 +254,10 @@ Degraded:
 - non-primary display path unavailable
 - non-required NIC unavailable
 - optional peripheral unavailable while minimum system path still works
+- storage continuing on firmware-only or legacy fallback
+- display continuing on text-only or firmware-only framebuffer fallback
+- input continuing on legacy-only keyboard path
+- network continuing on loop-only path without external stack bring-up
 
 Observation-only:
 
@@ -263,6 +286,8 @@ Formal adjudication boundary:
 - whether driver state may be replayed after crash
 - whether a driver failure escalates volume/system state
 - whether third-party or optional driver admission is allowed
+- whether blocker-class facts force degraded or recovery-required state even
+  when a bind is otherwise approved
 
 ### DATA
 
@@ -270,12 +295,45 @@ Formal adjudication boundary:
 
 - probe snapshots
 - binding results
+- binding evidence including selection basis, approval source, normalized
+  firmware-handoff snapshots, and PCI facts
+- blocker flags and recovery hints for each governed driver result
+- recovery-action flags and resulting health-floor snapshots for each governed
+  driver result
+- lifecycle consequence snapshots for each governed driver result
+- lifecycle-flag snapshots that explain which family-specific fallback path was
+  active at bind time
 - selected driver-set identity
 - driver health and failure history
 - rollback markers and recovery state
 
 `DATA` does not grant hardware authority. It only persists governed driver
 state.
+
+When `SYSTEM` applies a `SECURITY`-approved storage recovery floor, `DATA` must
+honor it before replay, scrub, format, or metadata writeback and continue only
+within the resulting readonly or recovery mode.
+
+While that floor is active, `DATA` must also execute layered storage
+verification before continuing normal object semantics:
+
+- metadata/super and object-record contract checks
+- txn-log and txn-aux readability checks
+- minimal live-slot read verification for persisted objects
+
+If those checks still show storage residue or unreadable regions, `DATA` must
+escalate the governed result to degraded or recovery-required instead of
+silently continuing under a stale readonly floor.
+
+`SYSTEM` and `UPDATE` must route installer or update storage failures that
+touch `LSYS` / `LDAT` / `LRCV` back through the same `SECURITY`-governed
+recovery boundary instead of leaving them as local-only deny strings.
+
+When `BOOT` or `DATA` has already established storage-rooted fatal or
+`recovery-required` state for `LSYS` / `LDAT` contract or integrity failure,
+`SYSTEM` must keep that root cause visible as `storage gate=fatal` or
+`storage gate=recovery` and stop before `PACKAGE` / `UPDATE` / `USER`
+expansion instead of collapsing it into a generic driver gate.
 
 ### OBSERVABILITY
 
@@ -285,6 +343,10 @@ state.
 - boot/load/failure/rollback audit trails
 - degraded-mode records
 - recovery traces
+- blocker-aware audit evidence that explains why a family continued in
+  degraded, fallback, or recovery-required state
+- short recovery-action summaries emitted when `SYSTEM` applies storage/input/
+  display/network recovery actions
 
 ### USER / PROGRAM / NETWORK / GRAPHICS
 
@@ -296,6 +358,14 @@ drivers:
 - `NETWORK` consumes NIC/link capability from `DEVICE`, not raw NIC ownership
 - `GRAPHICS` consumes display/input capability from `DEVICE`, not raw scanout
   ownership
+- when `SYSTEM` publishes degraded device state and `LIFECYCLE` carries input
+  recovery actions, `USER` must gate pointer-rich desktop interaction, keep
+  only the minimal keyboard path that remains valid, and admit operator-shell
+  recovery on the approved serial-backed path instead of inventing a new input
+  owner
+- when `SYSTEM` publishes degraded device state and `LIFECYCLE` carries display
+  recovery actions, `GRAPHICS` must collapse firmware-framebuffer paths to a
+  safe text-only projection instead of continuing richer desktop composition
 
 ## Update and Rollback Model
 
@@ -307,6 +377,7 @@ Mutable records belong in `LDAT`, including:
 
 - probe history
 - active binding results
+- blocker and recovery-hint evidence for each active binding
 - health/degraded markers
 - rollback and recovery markers
 

@@ -118,13 +118,35 @@ typedef uint64_t (MS_ABI *efi_block_rw_fn_t)(
 );
 
 static volatile struct luna_uefi_disk_handoff *uefi_disk_handoff(void);
+static volatile const struct luna_bootview *device_bootview(void);
 static int installer_target_bound(void);
 static int installer_media_mode(void);
 static int fwblk_source_ready(void);
 static int fwblk_target_ready(void);
 static int fwblk_target_separate(void);
+static int pci_record_present(const struct luna_pci_record *record);
+static void detect_disk_pci_record(void);
+static void detect_serial_pci_record(void);
+static void detect_display_pci_record(void);
+static void detect_input_pci_record(void);
+static void detect_net_pci_record(void);
 static const char *flag_state_name(int value);
 static const char *serial_selection_basis_name(void);
+static uint32_t driver_bind_lifecycle_consequence(uint32_t stage, uint32_t failure_class);
+static uint32_t driver_bind_blocker_flags(uint32_t driver_class, uint32_t driver_family, uint32_t failure_class);
+static uint32_t driver_bind_recovery_hint(uint32_t blocker_flags);
+static uint32_t driver_bind_recovery_action_flags(
+    uint32_t driver_class,
+    uint32_t blocker_flags,
+    uint32_t volume_state,
+    uint32_t system_mode
+);
+static uint32_t driver_bind_selection_basis(uint32_t driver_class, uint32_t driver_family);
+static uint32_t driver_bind_evidence_flags(uint32_t driver_class);
+static uint32_t driver_bind_policy_flags(uint32_t driver_class, uint32_t blocker_flags);
+static uint64_t driver_bind_lifecycle_flags(uint32_t blocker_flags);
+static uint64_t driver_bind_action_lifecycle_flags(uint32_t recovery_action_flags);
+static const struct luna_pci_record *driver_bind_pci_record(uint32_t driver_class);
 
 static inline void outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -270,7 +292,7 @@ static uint32_t g_pending_driver_bind_count = 0u;
 static uint8_t g_driver_bindings_persisted = 0u;
 
 #define LUNA_DRIVER_BIND_MAGIC 0x44525642u
-#define LUNA_DRIVER_BIND_VERSION 1u
+#define LUNA_DRIVER_BIND_VERSION 5u
 
 struct intel_rx_desc {
     uint32_t addr_low;
@@ -1226,6 +1248,46 @@ static uint32_t governance_approve(
     return gate->status;
 }
 
+static void serial_write_driver_bind_governance(
+    const char *result,
+    const char *lane_name,
+    const char *driver_name,
+    uint32_t driver_class,
+    uint32_t driver_family,
+    uint32_t blocker_flags,
+    uint32_t volume_state,
+    uint32_t mode,
+    uint32_t recovery_action_flags
+) {
+    serial_write("[DEVICE] bind govern=");
+    serial_write(result);
+    serial_write(" lane=");
+    serial_write(lane_name);
+    serial_write(" driver=");
+    serial_write(driver_name);
+    serial_write(" class=");
+    serial_write_hex32(driver_class);
+    serial_write(" family=");
+    serial_write_hex32(driver_family);
+    serial_write(" blocker=");
+    serial_write_hex32(blocker_flags);
+    serial_write(" state=");
+    serial_write_hex32(volume_state);
+    serial_write(" mode=");
+    serial_write_hex32(mode);
+    serial_write(" actions=");
+    serial_write_hex32(recovery_action_flags);
+    serial_write("\r\n");
+}
+
+static void serial_write_driver_flags(void) {
+    serial_write("[DEVICE] driver flags=");
+    serial_write_hex64(g_driver_lifecycle_flags);
+    serial_write(" actions=");
+    serial_write_hex32((uint32_t)(g_driver_lifecycle_flags >> LUNA_DRIVER_ACTION_LIFECYCLE_SHIFT));
+    serial_write("\r\n");
+}
+
 static void queue_driver_log(const char *message) {
     size_t i;
     uint32_t slot;
@@ -1335,7 +1397,8 @@ static uint8_t system_space_active(uint32_t space_id) {
 static void lifecycle_publish_driver_flags(void) {
     volatile struct luna_manifest *manifest =
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
-    volatile struct luna_lifecycle_gate *gate;
+    struct luna_lifecycle_gate gate_local;
+    volatile struct luna_lifecycle_gate *gate = &gate_local;
 
     if (g_driver_flags_published != 0u) {
         return;
@@ -1343,8 +1406,7 @@ static void lifecycle_publish_driver_flags(void) {
     if (g_lifecycle_wake_cid.low == 0u && g_lifecycle_wake_cid.high == 0u) {
         return;
     }
-    gate = (volatile struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base;
-    zero_bytes((void *)(uintptr_t)manifest->lifecycle_gate_base, sizeof(struct luna_lifecycle_gate));
+    zero_bytes(&gate_local, sizeof(gate_local));
     gate->sequence = 96;
     gate->opcode = LUNA_LIFE_WAKE_UNIT;
     gate->space_id = LUNA_SPACE_DEVICE;
@@ -1353,7 +1415,7 @@ static void lifecycle_publish_driver_flags(void) {
     gate->cid_low = g_lifecycle_wake_cid.low;
     gate->cid_high = g_lifecycle_wake_cid.high;
     ((void (SYSV_ABI *)(struct luna_lifecycle_gate *))(uintptr_t)manifest->lifecycle_gate_entry)(
-        (struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base
+        (struct luna_lifecycle_gate *)&gate_local
     );
     if (gate->status == LUNA_LIFE_OK) {
         g_driver_flags_published = 1u;
@@ -1364,6 +1426,8 @@ static void stage_driver_binding(
     uint32_t driver_class,
     uint32_t stage,
     uint32_t failure_class,
+    uint32_t volume_state,
+    uint32_t system_mode,
     uint32_t device_id,
     uint32_t lane_class,
     uint32_t driver_family,
@@ -1371,6 +1435,9 @@ static void stage_driver_binding(
     const char *lane_name,
     const char *driver_name
 ) {
+    volatile const struct luna_bootview *bootview = device_bootview();
+    const struct luna_pci_record *pci_record = 0;
+    uint32_t blocker_flags = 0u;
     struct luna_driver_bind_record *record;
 
     if (g_pending_driver_bind_count >= 8u) {
@@ -1388,9 +1455,42 @@ static void stage_driver_binding(
     record->lane_class = lane_class;
     record->driver_family = driver_family;
     record->state_flags = state_flags;
+    blocker_flags = driver_bind_blocker_flags(driver_class, driver_family, failure_class);
+    record->approval_space = LUNA_SPACE_SECURITY;
+    record->selection_basis = driver_bind_selection_basis(driver_class, driver_family);
+    record->evidence_flags = driver_bind_evidence_flags(driver_class);
+    record->volume_state = volume_state != 0u ? volume_state : bootview->volume_state;
+    record->system_mode = system_mode != 0u ? system_mode : bootview->system_mode;
+    record->lifecycle_consequence = driver_bind_lifecycle_consequence(stage, failure_class);
+    record->firmware_path = bootview->firmware_path;
+    record->firmware_flags = bootview->firmware_flags;
+    record->blocker_flags = blocker_flags;
+    record->recovery_hint = driver_bind_recovery_hint(blocker_flags);
+    record->recovery_action_flags = driver_bind_recovery_action_flags(
+        driver_class,
+        blocker_flags,
+        record->volume_state,
+        record->system_mode
+    );
+    record->lifecycle_flags = g_driver_lifecycle_flags;
+    record->firmware_storage_status = bootview->firmware_storage_status;
+    record->firmware_display_status = bootview->firmware_display_status;
+    record->reserved1[0] = 0u;
     record->bound_at = clock_microseconds();
     record->writer_space = LUNA_SPACE_DEVICE;
     record->authority_space = LUNA_SPACE_DEVICE;
+    pci_record = driver_bind_pci_record(driver_class);
+    if (pci_record != 0) {
+        record->pci_vendor_id = pci_record->vendor_id;
+        record->pci_device_id = pci_record->device_id;
+        record->pci_bus = pci_record->bus;
+        record->pci_slot = pci_record->slot;
+        record->pci_function = pci_record->function;
+        record->pci_class_code = pci_record->class_code;
+        record->pci_subclass = pci_record->subclass;
+        record->pci_prog_if = pci_record->prog_if;
+        record->pci_header_type = pci_record->header_type;
+    }
     copy_bytes(record->lane_name, lane_name, 16u);
     copy_bytes(record->driver_name, driver_name, 16u);
 }
@@ -1442,7 +1542,8 @@ static int find_driver_bind_object(uint32_t driver_class, struct luna_object_ref
         }
         if (object_type != LUNA_DATA_OBJECT_TYPE_DRIVER_BIND ||
             record.magic != LUNA_DRIVER_BIND_MAGIC ||
-            record.version != LUNA_DRIVER_BIND_VERSION ||
+            record.version == 0u ||
+            record.version > LUNA_DRIVER_BIND_VERSION ||
             record.driver_class != driver_class) {
             continue;
         }
@@ -1456,6 +1557,7 @@ static void persist_driver_binding(
     const struct luna_driver_bind_record *record
 ) {
     struct luna_object_ref object = {0u, 0u};
+    uint32_t policy_flags = 0u;
     uint32_t volume_state = 0u;
     uint32_t mode = 0u;
 
@@ -1466,11 +1568,12 @@ static void persist_driver_binding(
         (g_data_gather_cid.low == 0u && g_data_gather_cid.high == 0u)) {
         return;
     }
+    policy_flags = driver_bind_policy_flags(record->driver_class, record->blocker_flags);
     if (governance_approve(
             LUNA_CAP_DEVICE_BIND,
             g_driver_bind_cid,
             LUNA_DATA_OBJECT_TYPE_DRIVER_BIND,
-            record->driver_class,
+            policy_flags,
             &volume_state,
             &mode
         ) != LUNA_GATE_OK) {
@@ -1486,7 +1589,7 @@ static void persist_driver_binding(
                 0u,
                 0u,
                 LUNA_DATA_OBJECT_TYPE_DRIVER_BIND,
-                record->driver_class,
+                policy_flags,
                 0,
                 0u,
                 &seed_size,
@@ -1996,6 +2099,343 @@ static void detect_platform_pci_record(void) {
         return;
     }
     (void)pci_find_class_record(0x06u, 0x00u, 0u, 1, 0, &g_platform_pci);
+}
+
+static uint32_t driver_bind_selection_basis(uint32_t driver_class, uint32_t driver_family) {
+    switch (driver_class) {
+        case LUNA_DRIVER_CLASS_STORAGE_BOOT:
+            if (driver_family == LUNA_LANE_DRIVER_AHCI) {
+                return LUNA_DRIVER_SELECT_AHCI_RUNTIME;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+                if (fwblk_target_ready()) {
+                    return LUNA_DRIVER_SELECT_FWBLK_TARGET;
+                }
+                return LUNA_DRIVER_SELECT_FWBLK_SOURCE;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_PCI_IDE) {
+                return LUNA_DRIVER_SELECT_PIIX_IDE;
+            }
+            return LUNA_DRIVER_SELECT_ATA_FALLBACK;
+        case LUNA_DRIVER_CLASS_DISPLAY_MIN:
+            if (driver_family == LUNA_LANE_DRIVER_BOOT_FRAMEBUFFER) {
+                return LUNA_DRIVER_SELECT_GOP_FRAMEBUFFER;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_QEMU_STD_VGA) {
+                if (g_display_framebuffer_base != 0u && g_display_framebuffer_size != 0u) {
+                    return LUNA_DRIVER_SELECT_STD_VGA_FRAMEBUFFER;
+                }
+                return LUNA_DRIVER_SELECT_STD_VGA_TEXT;
+            }
+            return LUNA_DRIVER_SELECT_TEXT_FALLBACK;
+        case LUNA_DRIVER_CLASS_INPUT_MIN:
+            if (g_virtio_keyboard_ready != 0u) {
+                return LUNA_DRIVER_SELECT_VIRTIO_KEYBOARD;
+            }
+            if (g_ps2_controller_present != 0u) {
+                return LUNA_DRIVER_SELECT_I8042;
+            }
+            return LUNA_DRIVER_SELECT_LEGACY_KEYBOARD;
+        case LUNA_DRIVER_CLASS_NETWORK_BASELINE:
+            if (driver_family == LUNA_LANE_DRIVER_E1000) {
+                return g_net_ready != 0u ? LUNA_DRIVER_SELECT_E1000_READY : LUNA_DRIVER_SELECT_E1000_PRESENT;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_E1000E) {
+                return g_net_ready != 0u ? LUNA_DRIVER_SELECT_E1000E_READY : LUNA_DRIVER_SELECT_E1000E_PRESENT;
+            }
+            return LUNA_DRIVER_SELECT_SOFT_LOOP;
+        case LUNA_DRIVER_CLASS_PLATFORM_DISCOVERY:
+            if (driver_family == LUNA_LANE_DRIVER_ICH9_UART) {
+                return LUNA_DRIVER_SELECT_ICH9_PCI;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_PIIX_UART) {
+                return LUNA_DRIVER_SELECT_PIIX_PCI;
+            }
+            return LUNA_DRIVER_SELECT_LEGACY_UART;
+        default:
+            return LUNA_DRIVER_SELECT_NONE;
+    }
+}
+
+static uint32_t driver_bind_lifecycle_consequence(uint32_t stage, uint32_t failure_class) {
+    if (failure_class == LUNA_DRIVER_FAIL_FATAL) {
+        return LUNA_DRIVER_CONSEQUENCE_FATAL_STOP;
+    }
+    if (failure_class == LUNA_DRIVER_FAIL_DEGRADED) {
+        return LUNA_DRIVER_CONSEQUENCE_DEGRADED_CONTINUE;
+    }
+    if (failure_class == LUNA_DRIVER_FAIL_OBSERVER_ONLY) {
+        return LUNA_DRIVER_CONSEQUENCE_OBSERVER_ONLY;
+    }
+    if (stage == LUNA_DRIVER_STAGE_FAIL) {
+        return LUNA_DRIVER_CONSEQUENCE_BIND_DENIED;
+    }
+    return LUNA_DRIVER_CONSEQUENCE_CONTINUE;
+}
+
+static uint32_t driver_bind_blocker_flags(uint32_t driver_class, uint32_t driver_family, uint32_t failure_class) {
+    switch (driver_class) {
+        case LUNA_DRIVER_CLASS_STORAGE_BOOT:
+            if (failure_class == LUNA_DRIVER_FAIL_FATAL) {
+                return LUNA_DRIVER_BLOCKER_STORAGE_RUNTIME_MISSING;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_UEFI_BLOCK_IO) {
+                return LUNA_DRIVER_BLOCKER_STORAGE_FIRMWARE_ONLY;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_PCI_IDE || driver_family == LUNA_LANE_DRIVER_ATA_PIO) {
+                return LUNA_DRIVER_BLOCKER_STORAGE_LEGACY_FALLBACK;
+            }
+            return LUNA_DRIVER_BLOCKER_NONE;
+        case LUNA_DRIVER_CLASS_DISPLAY_MIN:
+            if (driver_family == LUNA_LANE_DRIVER_VGA_TEXT
+                || (driver_family == LUNA_LANE_DRIVER_QEMU_STD_VGA
+                    && (g_display_framebuffer_base == 0u || g_display_framebuffer_size == 0u))) {
+                return LUNA_DRIVER_BLOCKER_DISPLAY_TEXT_ONLY;
+            }
+            if (driver_family == LUNA_LANE_DRIVER_BOOT_FRAMEBUFFER
+                || (driver_family == LUNA_LANE_DRIVER_QEMU_STD_VGA
+                    && g_display_framebuffer_base != 0u
+                    && g_display_framebuffer_size != 0u)) {
+                return LUNA_DRIVER_BLOCKER_DISPLAY_FIRMWARE_ONLY;
+            }
+            return LUNA_DRIVER_BLOCKER_NONE;
+        case LUNA_DRIVER_CLASS_INPUT_MIN:
+            if (driver_family != LUNA_LANE_DRIVER_VIRTIO_KEYBOARD) {
+                return LUNA_DRIVER_BLOCKER_INPUT_LEGACY_ONLY;
+            }
+            return LUNA_DRIVER_BLOCKER_NONE;
+        case LUNA_DRIVER_CLASS_NETWORK_BASELINE:
+            if (g_net_ready == 0u) {
+                return LUNA_DRIVER_BLOCKER_NETWORK_LOOP_ONLY;
+            }
+            return LUNA_DRIVER_BLOCKER_NONE;
+        default:
+            return LUNA_DRIVER_BLOCKER_NONE;
+    }
+}
+
+static uint32_t driver_bind_recovery_hint(uint32_t blocker_flags) {
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_RUNTIME_MISSING) != 0u) {
+        return LUNA_DRIVER_RECOVERY_ENTER_RECOVERY;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_FIRMWARE_ONLY) != 0u) {
+        return LUNA_DRIVER_RECOVERY_RUNTIME_REBIND;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_LEGACY_FALLBACK) != 0u) {
+        return LUNA_DRIVER_RECOVERY_LEGACY_FALLBACK;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_DISPLAY_FIRMWARE_ONLY) != 0u) {
+        return LUNA_DRIVER_RECOVERY_RUNTIME_REBIND;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_DISPLAY_TEXT_ONLY) != 0u) {
+        return LUNA_DRIVER_RECOVERY_CONTINUE;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_INPUT_LEGACY_ONLY) != 0u) {
+        return LUNA_DRIVER_RECOVERY_LEGACY_FALLBACK;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_NETWORK_LOOP_ONLY) != 0u) {
+        return LUNA_DRIVER_RECOVERY_RUNTIME_REBIND;
+    }
+    return LUNA_DRIVER_RECOVERY_NONE;
+}
+
+static uint32_t driver_bind_recovery_action_flags(
+    uint32_t driver_class,
+    uint32_t blocker_flags,
+    uint32_t volume_state,
+    uint32_t system_mode
+) {
+    uint32_t actions = 0u;
+    volatile const struct luna_bootview *bootview = device_bootview();
+    uint32_t baseline_volume_state = bootview->volume_state;
+    uint32_t baseline_system_mode = bootview->system_mode;
+
+    switch (driver_class) {
+        case LUNA_DRIVER_CLASS_STORAGE_BOOT:
+            if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_RUNTIME_MISSING) != 0u
+                || volume_state == LUNA_VOLUME_RECOVERY_REQUIRED
+                || system_mode == LUNA_MODE_RECOVERY
+                || baseline_volume_state == LUNA_VOLUME_RECOVERY_REQUIRED
+                || baseline_system_mode == LUNA_MODE_RECOVERY) {
+                actions |= LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT;
+                actions |= LUNA_DRIVER_ACTION_STORAGE_RESCAN;
+                actions |= LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE;
+                return actions;
+            }
+            if ((blocker_flags & (LUNA_DRIVER_BLOCKER_STORAGE_FIRMWARE_ONLY | LUNA_DRIVER_BLOCKER_STORAGE_LEGACY_FALLBACK)) != 0u) {
+                actions |= LUNA_DRIVER_ACTION_STORAGE_FALLBACK_FAMILY;
+                actions |= LUNA_DRIVER_ACTION_STORAGE_RESCAN;
+                if (baseline_volume_state == LUNA_VOLUME_DEGRADED || baseline_system_mode == LUNA_MODE_READONLY) {
+                    actions |= LUNA_DRIVER_ACTION_STORAGE_READONLY;
+                    actions |= LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE;
+                }
+                return actions;
+            }
+            if (volume_state == LUNA_VOLUME_DEGRADED
+                || system_mode == LUNA_MODE_READONLY
+                || baseline_volume_state == LUNA_VOLUME_DEGRADED
+                || baseline_system_mode == LUNA_MODE_READONLY) {
+                actions |= LUNA_DRIVER_ACTION_STORAGE_READONLY;
+                actions |= LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE;
+            }
+            return actions;
+        case LUNA_DRIVER_CLASS_INPUT_MIN:
+            if ((blocker_flags & LUNA_DRIVER_BLOCKER_INPUT_LEGACY_ONLY) != 0u) {
+                actions |= LUNA_DRIVER_ACTION_INPUT_MINIMAL;
+                actions |= LUNA_DRIVER_ACTION_INPUT_OPERATOR_RECOVERY;
+            }
+            return actions;
+        case LUNA_DRIVER_CLASS_DISPLAY_MIN:
+            if ((blocker_flags & (LUNA_DRIVER_BLOCKER_DISPLAY_TEXT_ONLY | LUNA_DRIVER_BLOCKER_DISPLAY_FIRMWARE_ONLY)) != 0u) {
+                actions |= LUNA_DRIVER_ACTION_DISPLAY_CONSOLE_FALLBACK;
+            }
+            if ((blocker_flags & LUNA_DRIVER_BLOCKER_DISPLAY_TEXT_ONLY) != 0u) {
+                actions |= LUNA_DRIVER_ACTION_DISPLAY_FRAMEBUFFER_DISABLED;
+            }
+            return actions;
+        case LUNA_DRIVER_CLASS_NETWORK_BASELINE:
+            if ((blocker_flags & LUNA_DRIVER_BLOCKER_NETWORK_LOOP_ONLY) != 0u) {
+                actions |= LUNA_DRIVER_ACTION_NETWORK_OFFLINE;
+                actions |= LUNA_DRIVER_ACTION_NETWORK_SOFT_LOOP;
+            }
+            return actions;
+        default:
+            return actions;
+    }
+}
+
+static uint32_t driver_bind_evidence_flags(uint32_t driver_class) {
+    uint32_t flags = 0u;
+    volatile const struct luna_bootview *bootview = device_bootview();
+
+    if (bootview->system_mode == LUNA_MODE_INSTALL) {
+        flags |= LUNA_DRIVER_EVIDENCE_INSTALL_MODE;
+    }
+    if (bootview->system_mode == LUNA_MODE_RECOVERY) {
+        flags |= LUNA_DRIVER_EVIDENCE_RECOVERY_MODE;
+    }
+
+    switch (driver_class) {
+        case LUNA_DRIVER_CLASS_STORAGE_BOOT:
+            if (fwblk_source_ready()) {
+                flags |= LUNA_DRIVER_EVIDENCE_FWBLK_SOURCE;
+            }
+            if (fwblk_target_ready()) {
+                flags |= LUNA_DRIVER_EVIDENCE_FWBLK_TARGET;
+            }
+            if (fwblk_target_separate()) {
+                flags |= LUNA_DRIVER_EVIDENCE_FWBLK_TARGET_SEPARATE;
+            }
+            if (g_ahci_ready != 0u) {
+                flags |= LUNA_DRIVER_EVIDENCE_AHCI_READY;
+            }
+            detect_disk_pci_record();
+            if (pci_record_present(&g_disk_pci)) {
+                flags |= LUNA_DRIVER_EVIDENCE_PCI_PRESENT;
+            }
+            return flags;
+        case LUNA_DRIVER_CLASS_DISPLAY_MIN:
+            if (g_display_framebuffer_base != 0u && g_display_framebuffer_size != 0u) {
+                flags |= LUNA_DRIVER_EVIDENCE_FRAMEBUFFER;
+            }
+            detect_display_pci_record();
+            if (pci_record_present(&g_display_pci)) {
+                flags |= LUNA_DRIVER_EVIDENCE_PCI_PRESENT;
+            }
+            return flags;
+        case LUNA_DRIVER_CLASS_INPUT_MIN:
+            if (g_virtio_keyboard_ready != 0u) {
+                flags |= LUNA_DRIVER_EVIDENCE_VIRTIO_READY;
+            }
+            if (g_ps2_controller_present != 0u) {
+                flags |= LUNA_DRIVER_EVIDENCE_PS2_PRESENT;
+            }
+            detect_input_pci_record();
+            if (pci_record_present(&g_input_pci)) {
+                flags |= LUNA_DRIVER_EVIDENCE_PCI_PRESENT;
+            }
+            return flags;
+        case LUNA_DRIVER_CLASS_NETWORK_BASELINE:
+            if (g_net_ready != 0u) {
+                flags |= LUNA_DRIVER_EVIDENCE_NET_READY;
+            }
+            detect_net_pci_record();
+            if (pci_record_present(&g_net_pci)) {
+                flags |= LUNA_DRIVER_EVIDENCE_PCI_PRESENT;
+            }
+            return flags;
+        case LUNA_DRIVER_CLASS_PLATFORM_DISCOVERY:
+            detect_serial_pci_record();
+            if (pci_record_present(&g_serial_pci)) {
+                flags |= LUNA_DRIVER_EVIDENCE_PCI_PRESENT;
+            }
+            return flags;
+        default:
+            return flags;
+    }
+}
+
+static uint32_t driver_bind_policy_flags(uint32_t driver_class, uint32_t blocker_flags) {
+    return (driver_class << LUNA_DRIVER_POLICY_CLASS_SHIFT)
+        | (blocker_flags & LUNA_DRIVER_POLICY_BLOCKER_MASK);
+}
+
+static uint64_t driver_bind_lifecycle_flags(uint32_t blocker_flags) {
+    uint64_t flags = 0u;
+
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_RUNTIME_MISSING) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_RECOVERY_REQUIRED;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_FIRMWARE_ONLY) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_STORAGE_FIRMWARE_ONLY;
+        flags |= LUNA_DRIVER_LIFE_RUNTIME_REBIND;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_STORAGE_LEGACY_FALLBACK) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_STORAGE_LEGACY_FALLBACK;
+        flags |= LUNA_DRIVER_LIFE_LEGACY_RECOVERY;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_DISPLAY_TEXT_ONLY) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_DISPLAY_TEXT_ONLY;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_DISPLAY_FIRMWARE_ONLY) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_DISPLAY_FIRMWARE_ONLY;
+        flags |= LUNA_DRIVER_LIFE_RUNTIME_REBIND;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_INPUT_LEGACY_ONLY) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_INPUT_LEGACY_ONLY;
+        flags |= LUNA_DRIVER_LIFE_LEGACY_RECOVERY;
+    }
+    if ((blocker_flags & LUNA_DRIVER_BLOCKER_NETWORK_LOOP_ONLY) != 0u) {
+        flags |= LUNA_DRIVER_LIFE_NETWORK_LOOP_ONLY;
+        flags |= LUNA_DRIVER_LIFE_RUNTIME_REBIND;
+    }
+    return flags;
+}
+
+static uint64_t driver_bind_action_lifecycle_flags(uint32_t recovery_action_flags) {
+    return ((uint64_t)recovery_action_flags) << LUNA_DRIVER_ACTION_LIFECYCLE_SHIFT;
+}
+
+static const struct luna_pci_record *driver_bind_pci_record(uint32_t driver_class) {
+    switch (driver_class) {
+        case LUNA_DRIVER_CLASS_STORAGE_BOOT:
+            detect_disk_pci_record();
+            return pci_record_present(&g_disk_pci) ? &g_disk_pci : 0;
+        case LUNA_DRIVER_CLASS_DISPLAY_MIN:
+            detect_display_pci_record();
+            return pci_record_present(&g_display_pci) ? &g_display_pci : 0;
+        case LUNA_DRIVER_CLASS_INPUT_MIN:
+            detect_input_pci_record();
+            return pci_record_present(&g_input_pci) ? &g_input_pci : 0;
+        case LUNA_DRIVER_CLASS_NETWORK_BASELINE:
+            detect_net_pci_record();
+            return pci_record_present(&g_net_pci) ? &g_net_pci : 0;
+        case LUNA_DRIVER_CLASS_PLATFORM_DISCOVERY:
+            detect_serial_pci_record();
+            return pci_record_present(&g_serial_pci) ? &g_serial_pci : 0;
+        default:
+            return 0;
+    }
 }
 
 static void serial_write_pci_record(const char *prefix, const struct luna_pci_record *record) {
@@ -3771,23 +4211,45 @@ static void govern_driver_class(
     const char *driver_name,
     uint32_t failure_class
 ) {
+    uint32_t blocker_flags = 0u;
+    uint32_t policy_flags = 0u;
+    uint32_t recovery_action_flags = 0u;
     uint32_t volume_state = 0u;
     uint32_t mode = 0u;
 
     driver_audit("audit driver.probe start");
+    blocker_flags = driver_bind_blocker_flags(driver_class, driver_family, failure_class);
+    policy_flags = driver_bind_policy_flags(driver_class, blocker_flags);
     if (governance_approve(
             LUNA_CAP_DEVICE_BIND,
             g_driver_bind_cid,
             LUNA_DATA_OBJECT_TYPE_DRIVER_BIND,
-            driver_class,
+            policy_flags,
             &volume_state,
             &mode
         ) == LUNA_GATE_OK) {
+        recovery_action_flags = driver_bind_recovery_action_flags(driver_class, blocker_flags, volume_state, mode);
+        g_driver_lifecycle_flags |= driver_bind_action_lifecycle_flags(recovery_action_flags);
         driver_audit("audit driver.bind approved=SECURITY");
+        if (blocker_flags != 0u || recovery_action_flags != 0u) {
+            serial_write_driver_bind_governance(
+                "approved",
+                lane_name,
+                driver_name,
+                driver_class,
+                driver_family,
+                blocker_flags,
+                volume_state,
+                mode,
+                recovery_action_flags
+            );
+        }
         stage_driver_binding(
             driver_class,
             LUNA_DRIVER_STAGE_BIND,
             failure_class,
+            volume_state,
+            mode,
             device_id,
             lane_class,
             driver_family,
@@ -3797,11 +4259,31 @@ static void govern_driver_class(
         );
         return;
     }
+    recovery_action_flags = driver_bind_recovery_action_flags(
+        driver_class,
+        blocker_flags,
+        volume_state != 0u ? volume_state : device_bootview()->volume_state,
+        mode != 0u ? mode : device_bootview()->system_mode
+    );
+    g_driver_lifecycle_flags |= driver_bind_action_lifecycle_flags(recovery_action_flags);
     driver_fail_audit("audit driver.bind denied=SECURITY");
+    serial_write_driver_bind_governance(
+        "denied",
+        lane_name,
+        driver_name,
+        driver_class,
+        driver_family,
+        blocker_flags,
+        volume_state != 0u ? volume_state : device_bootview()->volume_state,
+        mode != 0u ? mode : device_bootview()->system_mode,
+        recovery_action_flags
+    );
     stage_driver_binding(
         driver_class,
         LUNA_DRIVER_STAGE_FAIL,
         failure_class,
+        volume_state,
+        mode,
         device_id,
         lane_class,
         driver_family,
@@ -3867,6 +4349,11 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
     serial_write_platform_context();
     (void)request_capability(LUNA_CAP_OBSERVE_LOG, &g_observe_log_cid);
     g_observe_logging_enabled = 0u;
+    g_input_event_debug_budget = 64u;
+    g_last_keyboard_event_source = INPUT_EVENT_SOURCE_NONE;
+    g_driver_flags_published = 0u;
+    g_lifecycle_wake_cid.low = 0u;
+    g_lifecycle_wake_cid.high = 0u;
     (void)request_capability(LUNA_CAP_DATA_SEED, &g_data_seed_cid);
     (void)request_capability(LUNA_CAP_DATA_POUR, &g_data_pour_cid);
     (void)request_capability(LUNA_CAP_DATA_DRAW, &g_data_draw_cid);
@@ -3880,6 +4367,9 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
         g_driver_lifecycle_flags |= LUNA_DRIVER_LIFE_STORAGE_FATAL;
         g_driver_fatal_seen = 1u;
     }
+    g_driver_lifecycle_flags |= driver_bind_lifecycle_flags(
+        driver_bind_blocker_flags(LUNA_DRIVER_CLASS_STORAGE_BOOT, disk_driver_family(), storage_failure)
+    );
     govern_driver_class(
         LUNA_DRIVER_CLASS_STORAGE_BOOT,
         LUNA_DEVICE_ID_DISK0,
@@ -3895,6 +4385,9 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
         display_failure = LUNA_DRIVER_FAIL_DEGRADED;
         g_driver_lifecycle_flags |= LUNA_DRIVER_LIFE_DISPLAY_DEGRADED;
     }
+    g_driver_lifecycle_flags |= driver_bind_lifecycle_flags(
+        driver_bind_blocker_flags(LUNA_DRIVER_CLASS_DISPLAY_MIN, display_driver_family(), display_failure)
+    );
     govern_driver_class(
         LUNA_DRIVER_CLASS_DISPLAY_MIN,
         LUNA_DEVICE_ID_DISPLAY0,
@@ -3910,6 +4403,9 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
         input_failure = LUNA_DRIVER_FAIL_DEGRADED;
         g_driver_lifecycle_flags |= LUNA_DRIVER_LIFE_INPUT_DEGRADED;
     }
+    g_driver_lifecycle_flags |= driver_bind_lifecycle_flags(
+        driver_bind_blocker_flags(LUNA_DRIVER_CLASS_INPUT_MIN, keyboard_driver_family(), input_failure)
+    );
     govern_driver_class(
         LUNA_DRIVER_CLASS_INPUT_MIN,
         LUNA_DEVICE_ID_INPUT0,
@@ -3941,6 +4437,9 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
         network_failure = LUNA_DRIVER_FAIL_DEGRADED;
         g_driver_lifecycle_flags |= LUNA_DRIVER_LIFE_NETWORK_DEGRADED;
     }
+    g_driver_lifecycle_flags |= driver_bind_lifecycle_flags(
+        driver_bind_blocker_flags(LUNA_DRIVER_CLASS_NETWORK_BASELINE, net_driver_family(), network_failure)
+    );
     govern_driver_class(
         LUNA_DRIVER_CLASS_NETWORK_BASELINE,
         LUNA_DEVICE_ID_NET0,
@@ -3952,6 +4451,8 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
         network_failure
     );
 
+    serial_write_driver_flags();
+    lifecycle_publish_driver_flags();
     serial_write("[DEVICE] lane ready\r\n");
     if (g_driver_fatal_seen != 0u) {
         serial_write("[DEVICE] driver fatal\r\n");
