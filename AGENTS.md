@@ -130,6 +130,7 @@ Primary frozen validation set:
 pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1
 python .\build\run_qemu_shellcheck.py
 python .\build\run_qemu_desktopcheck.py
+pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1
 python .\build\run_qemu_uefi_shellcheck.py
 python .\build\run_qemu_uefi_stabilitycheck.py
 python .\build\run_qemu_inboundcheck.py
@@ -231,6 +232,11 @@ approved post-freeze contract work.
   - `python .\build\run_qemu_desktopcheck.py`
 - UEFI loader / handoff / stability:
   - `python .\build\build.py`
+  - `python .\build\run_qemu_uefi_shellcheck.py`
+  - `python .\build\run_qemu_uefi_stabilitycheck.py`
+- Hardware / firmware matrix / pre-physical driver bring-up:
+  - `python .\build\build.py`
+  - `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
   - `python .\build\run_qemu_uefi_shellcheck.py`
   - `python .\build\run_qemu_uefi_stabilitycheck.py`
 - External inbound / external stack:

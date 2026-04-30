@@ -83,6 +83,11 @@ Required path:
   - `python .\build\build.py`
   - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
   - `python .\build\run_qemu_shellcheck.py`
+- hardware / firmware matrix / pre-physical driver bring-up:
+  - `python .\build\build.py`
+  - `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
+  - `python .\build\run_qemu_uefi_shellcheck.py`
+  - `python .\build\run_qemu_uefi_stabilitycheck.py`
 
 ## Mainline Allow / Deny Rules
 

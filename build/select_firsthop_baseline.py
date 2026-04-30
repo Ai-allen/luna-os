@@ -20,6 +20,10 @@ CANDIDATES = (
     ROOT / "vmware_desktopcheck.serial.log",
     ROOT / "vmware_m1.serial.log",
 )
+SELF_REFERENCE_CANDIDATES = {
+    "qemu_bootcheck.log",
+    "qemu_uefi_shellcheck.log",
+}
 
 
 def is_missing(value: str) -> bool:
@@ -70,12 +74,18 @@ def firmware_match_rank(actual_firmware: str, candidate_firmware: str) -> int:
 
 
 def select_baseline(actual_path: Path) -> dict[str, object]:
+    actual_path = actual_path.resolve()
     actual_info = classify(actual_path)
     actual_firmware = actual_info["firmware"]
     scored: list[tuple[tuple[int, int, int, int], dict[str, object]]] = []
 
     for candidate_path in CANDIDATES:
         if not candidate_path.exists():
+            continue
+        if (
+            candidate_path.resolve() == actual_path
+            and candidate_path.name not in SELF_REFERENCE_CANDIDATES
+        ):
             continue
         candidate_info = classify(candidate_path)
         compare_info = compare_data(candidate_path, actual_path)

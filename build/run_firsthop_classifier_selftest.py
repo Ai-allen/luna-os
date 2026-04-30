@@ -101,6 +101,21 @@ def main() -> int:
         require("input split", input_ready["split_layer"], "none")
         require("input lane", input_ready["input_lane"], "ready")
 
+        uefi_boot_only_path = write_case(
+            tmp,
+            "uefi-boot-only.log",
+            "\n".join(
+                (
+                    "[BOOT] dawn online",
+                    "[BOOT] fwblk magic=49464555 version=00000002 status=0000000000000009",
+                    "[BOOT] fwblk handoff ok",
+                )
+            )
+            + "\n",
+        )
+        uefi_boot_only = classify(uefi_boot_only_path)
+        require("uefi boot-only firmware", uefi_boot_only["firmware"], "uefi")
+
         selection_path = write_case(
             tmp,
             "selection.log",
@@ -139,6 +154,26 @@ def main() -> int:
         )
         governance = classify(governance_path)
         require("governance split", governance["split_layer"], "driver-governance")
+
+        audit_only_governance_path = write_case(
+            tmp,
+            "audit-only-governance.log",
+            "\n".join(
+                (
+                    "LunaLoader UEFI Stage 1 handoff",
+                    "[BOOT] dawn online",
+                    "[BOOT] fwblk handoff ok",
+                    "[BOOT] lsys super read ok",
+                    "[BOOT] native pair ok",
+                    "audit driver.bind denied=SECURITY",
+                    "[USER] shell ready",
+                )
+            )
+            + "\n",
+        )
+        audit_only_governance = classify(audit_only_governance_path)
+        require("audit-only governance split", audit_only_governance["split_layer"], "none")
+        require("audit-only governance evidence", audit_only_governance["driver_governance"], "(none)")
 
         reference_path = write_case(
             tmp,
@@ -216,10 +251,16 @@ def main() -> int:
         require("live uefi baseline", str(live_uefi["selected"]), "qemu_uefi_shellcheck.log")
         require("live uefi healthy", str(live_uefi["selected_healthy"]), "yes")
 
-        live_vmware = select_baseline(ROOT / "vmware_desktopcheck.serial.log")
+        live_vmware_path = ROOT / "vmware_desktopcheck.serial.log"
+        expected_vmware_blocker = "driver-family"
+        if not live_vmware_path.exists():
+            live_vmware_path = ROOT / "vmware_desktopcheck.vmware.log"
+        if not live_vmware_path.exists():
+            raise FileNotFoundError(live_vmware_path)
+        live_vmware = select_baseline(live_vmware_path)
         require("live vmware selected", str(live_vmware["selected"]), "qemu_uefi_shellcheck.log")
         require("live vmware healthy", str(live_vmware["selected_healthy"]), "yes")
-        require("live vmware blocker", str(live_vmware["selected_priority_blocker"]), "input")
+        require("live vmware blocker", str(live_vmware["selected_priority_blocker"]), expected_vmware_blocker)
 
         print("firsthop classifier selftest ok")
         return 0

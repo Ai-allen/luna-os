@@ -42,6 +42,9 @@ if ($hashTargets.Count -gt 0) {
   "boot_iso=$(Split-Path -Leaf $isoPath)"
   "boot_efi=$(Split-Path -Leaf $efiPath)"
   'firmware=efi'
+  'target_support_cell=intel-x86_64+uefi+sata-ahci+gop+keyboard'
+  'evidence_scope=virtualized-prephysical'
+  'support_cell_status=not-established-prephysical-only'
   'storage=sata-cdrom + optional sata-disk'
   'network=disconnected or e1000e observe-only'
 ) | Set-Content -Encoding ascii $machinePath
@@ -58,6 +61,7 @@ if ($hashTargets.Count -gt 0) {
   '9. Record whether [USER] shell ready appears and whether setup/status or BOOT state can be read.'
   '10. Save vmware.log / serial capture into this session directory after each run.'
   '11. Run .\finalize-session.ps1 after saving vmware_m1.serial.log or serial-capture.log to generate firsthop-summary.txt / firsthop-classification.txt / firsthop-delta.txt.'
+  '12. Treat evidence_scope=virtualized-prephysical as comparison evidence only, not support-cell evidence.'
 ) | Set-Content -Encoding ascii $checklistPath
 
 @(

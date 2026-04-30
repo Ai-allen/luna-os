@@ -22,7 +22,11 @@ def first_match(lines: list[str], prefix: str) -> str | None:
 
 
 def detect_firmware(lines: list[str]) -> str:
-    if first_match(lines, "LunaLoader UEFI Stage 1 handoff") or first_match(lines, "BdsDxe:"):
+    if (
+        first_match(lines, "LunaLoader UEFI Stage 1 handoff")
+        or first_match(lines, "BdsDxe:")
+        or first_match(lines, "[BOOT] fwblk magic=49464555")
+    ):
         return "uefi"
     if first_match(lines, "[LunaLoader] Stage 1 online"):
         return "legacy"
@@ -40,6 +44,54 @@ def parse_driver(line: str | None, key: str) -> str:
 
 def build_profile(*parts: tuple[str, str]) -> str:
     return ",".join(f"{key}={value}" for key, value in parts)
+
+
+TARGET_SUPPORT_CELL = "intel-x86_64+uefi+sata-ahci+gop+keyboard"
+SUCCESS_PROGRESS = {
+    "shell-ready",
+    "shell-ready-first-setup",
+    "desktop-shell-ready",
+    "desktop-first-setup",
+}
+
+
+def parse_profile(profile: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in profile.split(","):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        out[key] = value
+    return out
+
+
+def support_cell_runtime_gate(info: dict[str, str]) -> tuple[str, str]:
+    driver_profile = parse_profile(info["driver_profile"])
+    selection_profile = parse_profile(info["selection_profile"])
+    blockers: list[str] = []
+
+    if info["firmware"] != "uefi":
+        blockers.append("firmware-not-uefi")
+    if driver_profile.get("storage") != "ahci" or selection_profile.get("storage") != "ahci-runtime":
+        blockers.append("storage-not-ahci-runtime")
+    if info["storage_lane"] != "ready":
+        blockers.append("storage-lane-not-ready")
+    if driver_profile.get("display") != "boot-fb" or selection_profile.get("display") != "gop-fb":
+        blockers.append("display-not-gop-fb")
+    if info["display_lane"] != "framebuffer":
+        blockers.append("display-not-framebuffer")
+    if info["input_lane"] != "ready":
+        blockers.append("keyboard-not-ready")
+    if info["lsys"] != "ok":
+        blockers.append("lsys-not-ok")
+    if info["native_pair"] != "ok":
+        blockers.append("native-pair-not-ok")
+    if info["progress"] not in SUCCESS_PROGRESS:
+        blockers.append("shell-not-ready")
+    if info["split_layer"] != "none":
+        blockers.append(f"split-{info['split_layer']}")
+
+    return ("pass", "none") if not blockers else ("blocked", ",".join(blockers))
 
 
 def parse_lane(lines: list[str], storage_line: str | None, display_line: str | None, input_line: str | None, net_line: str | None) -> tuple[str, str, str, str]:
@@ -104,15 +156,29 @@ def detect_progress(lines: list[str]) -> str:
     return "unknown"
 
 
+def is_runtime_governance_denial(line: str) -> bool:
+    normalized = line.strip().lower()
+    if normalized.startswith("audit ") or normalized.startswith("row "):
+        return False
+    return "driver.bind denied" in line or "allow_device_call denied" in line
+
+
+def first_runtime_governance_denial(lines: list[str]) -> str | None:
+    for line in lines:
+        if is_runtime_governance_denial(line):
+            return line
+    return None
+
+
 def detect_split_layer(lines: list[str]) -> tuple[str, str]:
-    ordered = (
+    before_governance = (
         ("handoff", "[FWBLK] handoff missing"),
         ("storage", "[BOOT] lsys read fail"),
         ("storage", "[AHCI] "),
         ("storage", "[ATA] "),
         ("storage", "[DISK] "),
-        ("driver-governance", "driver.bind denied"),
-        ("driver-governance", "allow_device_call denied"),
+    )
+    after_governance = (
         ("display", "[GRAPHICS] framebuffer fail"),
         ("display", "[DEVICE] display path"),
         ("input", "[VIRTKBD] pci missing"),
@@ -125,11 +191,19 @@ def detect_split_layer(lines: list[str]) -> tuple[str, str]:
         input_ready = True
     if input_ctrl and "legacy=i8042" in input_ctrl:
         input_ready = True
-    for layer, marker in ordered:
+    for layer, marker in before_governance:
         line = first_match(lines, marker)
         if not line:
             continue
         if layer == "handoff" and first_match(lines, "[BOOT] lsys super read ok"):
+            continue
+        return layer, line
+    governance_line = first_runtime_governance_denial(lines)
+    if governance_line:
+        return "driver-governance", governance_line
+    for layer, marker in after_governance:
+        line = first_match(lines, marker)
+        if not line:
             continue
         if layer == "display" and first_match(lines, "[USER] shell ready"):
             continue
@@ -142,10 +216,7 @@ def detect_split_layer(lines: list[str]) -> tuple[str, str]:
 
 
 def detect_governance(lines: list[str]) -> str:
-    for line in lines:
-        if "driver.bind denied" in line or "allow_device_call denied" in line:
-            return line
-    return "(none)"
+    return first_runtime_governance_denial(lines) or "(none)"
 
 
 def detect_residual(lines: list[str]) -> str:
@@ -244,7 +315,7 @@ def classify(log_path: Path) -> dict[str, str]:
         )
     )
 
-    return {
+    info = {
         "log": str(log_path),
         "firmware": firmware,
         "driver_profile": driver_profile,
@@ -271,6 +342,11 @@ def classify(log_path: Path) -> dict[str, str]:
         "storage_residual_region": residual_region,
         "driver_governance": governance,
     }
+    gate, blockers = support_cell_runtime_gate(info)
+    info["target_support_cell"] = TARGET_SUPPORT_CELL
+    info["support_cell_runtime_gate"] = gate
+    info["support_cell_blockers"] = blockers
+    return info
 
 
 def summarize(log_path: Path) -> str:
@@ -310,6 +386,9 @@ def summarize(log_path: Path) -> str:
         "",
         "[triage]",
         "first_real_machine_focus=handoff,storage,input,display,driver-family",
+        f"target_support_cell={info['target_support_cell']}",
+        f"support_cell_runtime_gate={info['support_cell_runtime_gate']}",
+        f"support_cell_blockers={info['support_cell_blockers']}",
         "",
     ]
     return "\n".join(out)

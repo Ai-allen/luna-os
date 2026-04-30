@@ -8,6 +8,19 @@ real physical machine run.
 It does not replace physical bring-up. It exists only to reduce the gap
 between `QEMU UEFI` and real `x86_64 UEFI` machines.
 
+## Formal Gate Role
+
+`pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1` is now the formal
+VMware host-level desktop gate used before hardware / firmware matrix moves and
+before new physical-machine bring-up sessions.
+
+Hard boundary:
+
+- it is an independent host-level gate
+- it is not folded into `python .\build\run_qemu_fullregression.py`
+- VMware host instability must not be reported as a QEMU full-regression
+  failure
+
 ## Minimum VMware Configuration
 
 Use the existing GA boot artifact:
@@ -58,6 +71,8 @@ Current validated extension beyond the minimum M1 gate:
   `desktop.boot -> Settings -> Files -> Console`
 - the current VMware path therefore provides a stronger pre-physical comparison
   than the minimum shell-ready-only M1 success line
+- that stronger desktop cross-check is now the required VMware preflight before
+  new hardware / firmware matrix or physical bring-up classification work
 
 ## Boot Path
 
@@ -145,6 +160,23 @@ When a raw `DISK` residual exposes only an `lba=...`, the verdict now refines
 it into `lsys+offset` or `ldat+offset` when the selected healthy reference
 provides the matching disk layout context.
 
+## Failure Classification
+
+When the automated VMware desktop gate fails, record one of:
+
+- `LunaOS guest failure`
+- `VMware/vmrun host-start failure`
+- `log-capture failure`
+
+Interpretation rule:
+
+- `LunaOS guest failure` means the gate reached serial output but missed one or
+  more required LunaOS lines
+- `VMware/vmrun host-start failure` means the gate could not start the VM
+  cleanly on the host
+- `log-capture failure` means the VM path ran, but the required serial capture
+  was not available for contract verification
+
 ## Current Status
 
 Current repository status is:
@@ -153,7 +185,7 @@ Current repository status is:
 - the VMware session directory script exists
 - the automated VMware desktop cross-check
   `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
-  is now running successfully in this environment
+  is now running successfully in this environment as an independent host-level gate
 - current verified output reaches:
   - `[BOOT] dawn online`
   - `[USER] shell ready`

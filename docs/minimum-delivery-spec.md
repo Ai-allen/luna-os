@@ -39,6 +39,7 @@ The current frozen RC3 baseline is:
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
 - `python .\build\run_qemu_shellcheck.py`
 - `python .\build\run_qemu_desktopcheck.py`
+- `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
 - `python .\build\run_qemu_uefi_shellcheck.py`
 - `python .\build\run_qemu_uefi_stabilitycheck.py`
 - `python .\build\run_qemu_inboundcheck.py`
@@ -47,6 +48,8 @@ The current frozen RC3 baseline is:
 - `python .\build\run_qemu_fullregression.py`
 
 These passing results define the current release-candidate freeze gate.
+`run_vmware_desktopcheck.ps1` remains a separate host-level desktop gate.
+`run_qemu_fullregression.py` remains the QEMU-only aggregate gate.
 
 ## Boot Paths
 

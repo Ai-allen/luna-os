@@ -39,6 +39,12 @@ FAILURE_KEYS = (
     "driver_governance",
 )
 
+SUPPORT_CELL_KEYS = (
+    "target_support_cell",
+    "support_cell_runtime_gate",
+    "support_cell_blockers",
+)
+
 
 def parse_driver_profile(profile: str) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -186,6 +192,7 @@ def compare(reference_path: Path, actual_path: Path) -> str:
     out.extend(format_delta("identity", IDENTITY_KEYS, reference, actual))
     out.extend(format_delta("contracts", CONTRACT_KEYS, reference, actual))
     out.extend(format_delta("failure", FAILURE_KEYS, reference, actual))
+    out.extend(format_delta("support-cell", SUPPORT_CELL_KEYS, reference, actual))
     return "\n".join(out)
 
 

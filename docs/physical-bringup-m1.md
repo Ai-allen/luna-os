@@ -8,6 +8,24 @@ This document freezes the first real-machine bring-up path for LunaOS after
 Milestone 1 is not a feature expansion. It is the minimum hardware bring-up
 path for a real `x86_64 UEFI` machine.
 
+## Required Preflight
+
+Before opening a new physical-machine bring-up session, the current image must
+first pass:
+
+- `python .\build\build.py`
+- `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
+- `python .\build\run_qemu_uefi_shellcheck.py`
+- `python .\build\run_qemu_uefi_stabilitycheck.py`
+
+Preflight rule:
+
+- VMware desktopcheck is the formal host-level desktop preflight for the
+  current hardware / firmware matrix and driver bring-up mainline
+- a VMware host-start failure or log-capture failure blocks session readiness,
+  but it does not by itself classify a LunaOS guest regression or move a
+  support cell
+
 ## Success Standard
 
 Milestone 1 is successful only when a real machine can:
@@ -96,6 +114,24 @@ This creates:
 - placeholder `firsthop-delta.txt`
 - placeholder `firsthop-verdict.txt`
 
+Physical evidence rule:
+
+- a physical session directory by itself is not real-machine evidence
+- `operator-notes.txt` must fill every required key before finalization:
+  `machine_model`, `firmware_version`, `sata_mode`, `usb_port`,
+  `capture_source`, `last_visible_line`, `shell_ready`, `gop_result`, and
+  `keyboard_result`
+- `capture_source` must be one of `serial`, `display-photo`, or
+  `operator-transcript`
+- `shell_ready` must be one of `yes`, `no`, or `not-reached`
+- `gop_result` must be one of `ready`, `missing`, or `not-reached`
+- `keyboard_result` must be one of `ready`, `blocked`, or `not-reached`
+- a log whose filename contains `qemu` or `vmware` remains
+  `virtualized-prephysical`, even if it is copied into a physical session
+- `firsthop-verdict.txt` must report both `evidence_scope=physical-candidate`
+  and `physical_evidence_status=present` before the run can be used as
+  real-machine support-cell evidence
+
 Primary log path for Milestone 1:
 
 - the last visible `LunaLoader` line on the physical display
@@ -167,11 +203,18 @@ After `.\finalize-session.ps1` runs, the session directory must contain:
   - difference against the current virtualized baseline chosen by firmware type
 - `firsthop-log.txt`
   - the captured log name, selected reference baseline, current split layer,
-    current priority blocker, and current `driver_family_delta`
+    current priority blocker, current `driver_family_delta`, evidence scope,
+    physical evidence status, and support-cell runtime gate
 - `firsthop-verdict.txt`
   - the single-file bring-up verdict for the session
   - current progress, selected healthy reference, current priority blocker,
-    the resolved `storage_residual_region`, and the next recommended check
+    the resolved `storage_residual_region`, physical evidence blockers,
+    support-cell status, and the next recommended check
+
+Physical evidence blockers are intentionally specific. For example,
+`operator-note-gop-result-missing`, `operator-note-keyboard-result-invalid`, or
+`virtualized-log-name` means the run is still bring-up data, but it is not
+support-cell evidence.
 
 Use these files to classify the first real-machine failure before changing any
 runtime code. The expected first triage layers remain:

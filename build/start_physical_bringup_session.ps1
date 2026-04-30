@@ -38,6 +38,9 @@ if ($hashTargets.Count -gt 0) {
   "version_stem=$VersionStem"
   "machine=$Machine"
   "created_utc=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+  'target_support_cell=intel-x86_64+uefi+sata-ahci+gop+keyboard'
+  'evidence_scope=physical-candidate'
+  'support_cell_status=not-established-until-reviewed'
   "usb_image=$(Split-Path -Leaf $imagePath)"
   "installer_iso=$(Split-Path -Leaf $isoPath)"
   "bootx64=$(Split-Path -Leaf $bootx64Path)"
@@ -51,16 +54,26 @@ if ($hashTargets.Count -gt 0) {
   '5. Record the last visible LunaLoader line if boot stops before stage jump.'
   '6. Record whether [BOOT] dawn online and [USER] shell ready appear.'
   '7. If the board exposes serial, capture COM1 at 38400 8N1 and save raw log beside this checklist.'
-  '8. Record storage mode, GOP resolution, keyboard path, and whether shell accepts input.'
+  '8. Record storage mode, GOP result, keyboard path, and whether shell accepts input.'
   '9. Capture [DEVICE] * path and [DEVICE] * select lines so driver-family and selection basis can be compared against the virtualized baseline.'
   '10. Keep photos of the final visible screen in this session directory.'
-  '11. Run .\finalize-session.ps1 after saving serial-capture.log to generate firsthop-summary.txt / firsthop-classification.txt / firsthop-delta.txt.'
-  '12. Do not switch to NVMe/RAID/VMD during Milestone 1.'
+  '11. Fill every operator-notes.txt key before finalization; empty keys keep physical_evidence_status=missing.'
+  '12. Run .\finalize-session.ps1 after saving serial-capture.log to generate firsthop-summary.txt / firsthop-classification.txt / firsthop-delta.txt.'
+  '13. Confirm firsthop-verdict.txt says evidence_scope=physical-candidate and physical_evidence_status=present before treating the result as real support-cell evidence.'
+  '14. Do not switch to NVMe/RAID/VMD during Milestone 1.'
 ) | Set-Content -Encoding ascii $checklistPath
 
 @(
-  'Paste run notes here.'
-  'Include: machine model, firmware version, SATA mode, USB port used, last visible line, shell-ready result.'
+  'Replace every value before finalization.'
+  'machine_model='
+  'firmware_version='
+  'sata_mode='
+  'usb_port='
+  'capture_source=serial|display-photo|operator-transcript'
+  'last_visible_line='
+  'shell_ready=yes|no|not-reached'
+  'gop_result=ready|missing|not-reached'
+  'keyboard_result=ready|blocked|not-reached'
 ) | Set-Content -Encoding ascii $notesPath
 
 @(

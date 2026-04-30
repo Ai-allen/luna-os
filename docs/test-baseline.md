@@ -10,6 +10,7 @@ The current frozen gates are:
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
 - `python .\build\run_qemu_shellcheck.py`
 - `python .\build\run_qemu_desktopcheck.py`
+- `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
 - `python .\build\run_qemu_uefi_shellcheck.py`
 - `python .\build\run_qemu_uefi_stabilitycheck.py`
 - `python .\build\run_qemu_inboundcheck.py`
@@ -247,6 +248,45 @@ Frozen current assertions:
   - `desktop.files.open` -> ok
   - post-open desktop status remains on the current Files selection state
   - current tested hit output includes the current Files window and glyph facts
+
+## VMware desktopcheck Baseline
+
+### Purpose
+
+- Verify the current VMware UEFI comparison lane remains green.
+- Verify the current primary virtualized validation environment still reaches
+  the shell and minimum desktop cross-check.
+- Keep the VMware-led path aligned with the current hardware / firmware matrix
+  rather than leaving it as an unreferenced side path.
+
+### Required Current Outputs
+
+- `[BOOT] dawn online`
+- `[GRAPHICS] console ready`
+- `[USER] shell ready`
+- `[USER] input lane ready`
+- `first-setup required: no hostname or user configured`
+- `setup.init luna dev secret`
+- `setup.init ok: host and first user created`
+- `login ok: session active`
+- `desktop.boot`
+- `[DESKTOP] boot ok`
+- `desktop.launch Settings`
+- `[DESKTOP] launch Settings ok`
+- `desktop.launch Files`
+- `[DESKTOP] launch Files ok`
+- `desktop.launch Console`
+- `[DESKTOP] launch Console ok`
+
+### Failure Classification
+
+- `VMware desktopcheck host-start failure`:
+  - `vmrun` / VMware host state prevented the VM from starting
+- `VMware desktopcheck log-capture failure`:
+  - the VM ran but the serial log required for the gate was not captured
+- `VMware desktopcheck guest failure`:
+  - the VM booted far enough to collect logs, but LunaOS output missed a
+    required frozen line
 
 ## UEFI shellcheck Baseline
 

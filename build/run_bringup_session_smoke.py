@@ -52,6 +52,10 @@ def assert_summary(
     expected_reference: str,
     expected_firmware: str,
     expected_progress: str,
+    expected_evidence_scope: str,
+    expected_physical_status: str,
+    expected_support_cell_status: str,
+    expected_physical_blocker: str | None = None,
 ) -> None:
     finalize_script = session_dir / "finalize-session.ps1"
     if not finalize_script.exists():
@@ -172,21 +176,34 @@ def assert_summary(
         "reference_healthy=yes",
         "delta_layers=none",
         "driver_family_delta=none",
+        "target_support_cell=intel-x86_64+uefi+sata-ahci+gop+keyboard",
+        f"evidence_scope={expected_evidence_scope}",
+        f"physical_evidence_status={expected_physical_status}",
+        "support_cell_runtime_gate=",
+        f"support_cell_status={expected_support_cell_status}",
         "storage_residual_region=(none)",
         "next_action=",
     )
     for marker in required_verdict:
         if marker not in verdict:
             raise RuntimeError(f"verdict missing {marker}: {verdict_path}")
+    if expected_physical_blocker and expected_physical_blocker not in verdict:
+        raise RuntimeError(
+            f"verdict missing physical evidence blocker {expected_physical_blocker}: {verdict_path}"
+        )
 
     meta = meta_path.read_text(encoding="ascii", errors="replace")
     required_meta = (
         "log=",
         "reference=",
+        f"evidence_scope={expected_evidence_scope}",
+        f"physical_evidence_status={expected_physical_status}",
         "firmware=",
         "split_layer=",
         "priority_blocker=",
         "driver_family_delta=",
+        f"support_cell_status={expected_support_cell_status}",
+        "support_cell_runtime_gate=",
         "generated_utc=",
     )
     for marker in required_meta:
@@ -253,6 +270,10 @@ def main() -> int:
             "qemu_bootcheck.log",
             "legacy",
             "shell-ready-first-setup",
+            "virtualized-prephysical",
+            "missing",
+            "not-established-prephysical-only",
+            "virtualized-log-name",
         )
         assert_summary(
             vmware_dir,
@@ -260,6 +281,9 @@ def main() -> int:
             "qemu_uefi_shellcheck.log",
             "uefi",
             "desktop-first-setup",
+            "virtualized-prephysical",
+            "not-applicable",
+            "not-established-prephysical-only",
         )
 
         sys.stdout.write(

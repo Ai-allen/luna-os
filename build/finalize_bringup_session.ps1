@@ -2,7 +2,9 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$SessionDir,
-  [string]$LogPath
+  [string]$LogPath,
+  [ValidateSet('auto', 'physical-candidate', 'virtualized-prephysical', 'unknown')]
+  [string]$EvidenceScope = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +54,168 @@ function Get-KeyValueLine {
   return $null
 }
 
+function Get-KeyValueMap {
+  param([object[]]$Lines)
+  $values = @{}
+  foreach ($line in $Lines) {
+    if ($null -eq $line) {
+      continue
+    }
+    $text = $line.ToString().Trim()
+    $index = $text.IndexOf('=')
+    if ($index -lt 0) {
+      continue
+    }
+    $key = $text.Substring(0, $index).Trim()
+    $value = $text.Substring($index + 1).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($key)) {
+      $values[$key] = $value
+    }
+  }
+  return $values
+}
+
+function Add-PhysicalNoteBlockers {
+  param(
+    [string]$NotesPath,
+    [System.Collections.Generic.List[string]]$Blockers
+  )
+
+  if (-not (Test-Path $NotesPath -PathType Leaf)) {
+    $Blockers.Add('operator-notes-missing')
+    return
+  }
+
+  $noteLines = @(Get-Content -Path $NotesPath -ErrorAction Stop)
+  $noteValues = Get-KeyValueMap -Lines $noteLines
+  $placeholderLines = @(
+    'paste run notes here.',
+    'include: machine model, firmware version, sata mode, usb port used, last visible line, shell-ready result.',
+    'replace every value before finalization.'
+  )
+  foreach ($line in $noteLines) {
+    if ($null -eq $line) {
+      continue
+    }
+    $lower = $line.ToString().Trim().ToLowerInvariant()
+    if ($placeholderLines -contains $lower) {
+      $Blockers.Add('operator-notes-placeholder')
+    }
+  }
+
+  $requiredNoteKeys = @(
+    'machine_model',
+    'firmware_version',
+    'sata_mode',
+    'usb_port',
+    'capture_source',
+    'last_visible_line',
+    'shell_ready',
+    'gop_result',
+    'keyboard_result'
+  )
+  foreach ($key in $requiredNoteKeys) {
+    if (-not $noteValues.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($noteValues[$key])) {
+      $Blockers.Add("operator-note-$($key.Replace('_', '-'))-missing")
+    }
+  }
+
+  $enumRules = @{
+    capture_source = @('serial', 'display-photo', 'operator-transcript')
+    shell_ready = @('yes', 'no', 'not-reached')
+    gop_result = @('ready', 'missing', 'not-reached')
+    keyboard_result = @('ready', 'blocked', 'not-reached')
+  }
+  foreach ($key in $enumRules.Keys) {
+    if (-not $noteValues.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($noteValues[$key])) {
+      continue
+    }
+    $value = $noteValues[$key].ToString().Trim().ToLowerInvariant()
+    if ($enumRules[$key] -notcontains $value) {
+      $Blockers.Add("operator-note-$($key.Replace('_', '-'))-invalid")
+    }
+  }
+}
+
+function Test-VirtualizedLogPath {
+  param([string]$CapturedLogPath)
+  $name = [System.IO.Path]::GetFileName($CapturedLogPath).ToLowerInvariant()
+  $pathText = $CapturedLogPath.Replace('\', '/').ToLowerInvariant()
+  return $name.Contains('qemu') -or $name.Contains('vmware') -or $pathText.Contains('/artifacts/vmware_bringup/')
+}
+
+function Get-PhysicalEvidenceState {
+  param(
+    [string]$SessionPath,
+    [string]$CapturedLogPath
+  )
+
+  $sessionText = $SessionPath.Replace('\', '/').ToLowerInvariant()
+  if (-not $sessionText.Contains('/artifacts/physical_bringup/')) {
+    return @{
+      Status = 'not-applicable'
+      Blockers = 'not-applicable'
+    }
+  }
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  if (Test-VirtualizedLogPath -CapturedLogPath $CapturedLogPath) {
+    $blockers.Add('virtualized-log-name')
+  }
+
+  $machinePath = Join-Path $SessionPath 'machine.txt'
+  if (-not (Test-Path $machinePath -PathType Leaf)) {
+    $blockers.Add('machine-metadata-missing')
+  } else {
+    $machineLines = @(Get-Content -Path $machinePath -ErrorAction Stop)
+    $targetCell = Get-KeyValueLine -Lines $machineLines -Key 'target_support_cell'
+    $scope = Get-KeyValueLine -Lines $machineLines -Key 'evidence_scope'
+    if ($targetCell -ne 'intel-x86_64+uefi+sata-ahci+gop+keyboard') {
+      $blockers.Add('target-cell-metadata-missing')
+    }
+    if ($scope -ne 'physical-candidate') {
+      $blockers.Add('physical-scope-metadata-missing')
+    }
+  }
+
+  $notesPath = Join-Path $SessionPath 'operator-notes.txt'
+  Add-PhysicalNoteBlockers -NotesPath $notesPath -Blockers $blockers
+
+  if ($blockers.Count -eq 0) {
+    return @{
+      Status = 'present'
+      Blockers = 'none'
+    }
+  }
+  return @{
+    Status = 'missing'
+    Blockers = ($blockers -join ',')
+  }
+}
+
+function Resolve-EvidenceScope {
+  param(
+    [string]$SessionPath,
+    [string]$CapturedLogPath,
+    [string]$RequestedScope,
+    [hashtable]$PhysicalEvidence
+  )
+  if ($RequestedScope -ne 'auto') {
+    if ($RequestedScope -eq 'physical-candidate' -and $PhysicalEvidence.Status -ne 'present') {
+      return 'unknown'
+    }
+    return $RequestedScope
+  }
+  $sessionText = $SessionPath.Replace('\', '/').ToLowerInvariant()
+  if ((Test-VirtualizedLogPath -CapturedLogPath $CapturedLogPath) -or $sessionText.Contains('/artifacts/vmware_bringup/')) {
+    return 'virtualized-prephysical'
+  }
+  if ($sessionText.Contains('/artifacts/physical_bringup/') -and $PhysicalEvidence.Status -eq 'present') {
+    return 'physical-candidate'
+  }
+  return 'unknown'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $sessionPath = Resolve-OptionalPath -BaseDir $repoRoot -Candidate $SessionDir
 if (-not (Test-Path $sessionPath -PathType Container)) {
@@ -92,6 +256,8 @@ $capturedCopyPath = Join-Path $sessionPath $capturedName
 if ([System.IO.Path]::GetFullPath($resolvedLogPath) -ne [System.IO.Path]::GetFullPath($capturedCopyPath)) {
   Copy-Item $resolvedLogPath $capturedCopyPath -Force
 }
+$physicalEvidence = Get-PhysicalEvidenceState -SessionPath $sessionPath -CapturedLogPath $capturedCopyPath
+$resolvedEvidenceScope = Resolve-EvidenceScope -SessionPath $sessionPath -CapturedLogPath $capturedCopyPath -RequestedScope $EvidenceScope -PhysicalEvidence $physicalEvidence
 
 $summaryText = & python $summaryScript $capturedCopyPath
 if ($LASTEXITCODE -ne 0) {
@@ -117,7 +283,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "firsthop baseline selection failed for $capturedCopyPath"
 }
 $baselineSelectText | Set-Content -Encoding ascii $referencePath
-$verdictText = & python $renderVerdictScript $capturedCopyPath
+$verdictText = & python $renderVerdictScript --evidence-scope $resolvedEvidenceScope $capturedCopyPath
 if ($LASTEXITCODE -ne 0) {
   throw "firsthop verdict render failed for $capturedCopyPath"
 }
@@ -160,15 +326,41 @@ $driverFamilyDelta = Get-KeyValueLine -Lines $deltaText -Key 'driver_family_delt
 if (-not $driverFamilyDelta) {
   $driverFamilyDelta = 'unknown'
 }
+$supportCellStatus = Get-KeyValueLine -Lines $verdictText -Key 'support_cell_status'
+if (-not $supportCellStatus) {
+  $supportCellStatus = 'unknown'
+}
+$supportCellRuntimeGate = Get-KeyValueLine -Lines $verdictText -Key 'support_cell_runtime_gate'
+if (-not $supportCellRuntimeGate) {
+  $supportCellRuntimeGate = 'unknown'
+}
+$supportCellBlockers = Get-KeyValueLine -Lines $verdictText -Key 'support_cell_blockers'
+if (-not $supportCellBlockers) {
+  $supportCellBlockers = 'unknown'
+}
+$physicalEvidenceStatus = Get-KeyValueLine -Lines $verdictText -Key 'physical_evidence_status'
+if (-not $physicalEvidenceStatus) {
+  $physicalEvidenceStatus = $physicalEvidence.Status
+}
+$physicalEvidenceBlockers = Get-KeyValueLine -Lines $verdictText -Key 'physical_evidence_blockers'
+if (-not $physicalEvidenceBlockers) {
+  $physicalEvidenceBlockers = $physicalEvidence.Blockers
+}
 $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(missing)' }
 
 @(
   "log=$(Split-Path -Leaf $capturedCopyPath)"
   "reference=$referenceName"
+  "evidence_scope=$resolvedEvidenceScope"
+  "physical_evidence_status=$physicalEvidenceStatus"
+  "physical_evidence_blockers=$physicalEvidenceBlockers"
   "firmware=$firmware"
   "split_layer=$splitLayer"
   "priority_blocker=$priorityBlocker"
   "driver_family_delta=$driverFamilyDelta"
+  "support_cell_status=$supportCellStatus"
+  "support_cell_runtime_gate=$supportCellRuntimeGate"
+  "support_cell_blockers=$supportCellBlockers"
   "generated_utc=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 ) | Set-Content -Encoding ascii $metaPath
 

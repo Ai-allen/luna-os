@@ -94,6 +94,7 @@ python .\build\build.py
 pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1
 python .\build\run_qemu_shellcheck.py
 python .\build\run_qemu_desktopcheck.py
+pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1
 python .\build\run_qemu_uefi_shellcheck.py
 python .\build\run_qemu_uefi_stabilitycheck.py
 python .\build\run_qemu_inboundcheck.py
@@ -103,8 +104,11 @@ python .\build\run_qemu_fullregression.py
 ```
 
 These passing results define the current RC3 freeze baseline across BIOS,
-desktop, update apply, external inbound, external stack, UEFI shell/stability,
-and full regression.
+desktop, VMware UEFI desktop cross-check, update apply, external inbound,
+external stack, UEFI shell/stability, and full regression.
+`pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1` is a separate
+host-level gate. `python .\build\run_qemu_fullregression.py` remains the
+QEMU-only regression wrapper.
 
 ## Developer Loop
 

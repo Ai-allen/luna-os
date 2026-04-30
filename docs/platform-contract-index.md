@@ -27,6 +27,7 @@ Primary gates:
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
 - `python .\build\run_qemu_shellcheck.py`
 - `python .\build\run_qemu_desktopcheck.py`
+- `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
 - `python .\build\run_qemu_uefi_shellcheck.py`
 - `python .\build\run_qemu_uefi_stabilitycheck.py`
 - `python .\build\run_qemu_inboundcheck.py`
@@ -175,6 +176,7 @@ Status:
 
 - `x86_64 + UEFI` virtualized pre-physical lane established
 - VMware UEFI is the current primary validation environment
+- VMware desktopcheck is the formal host-level desktop comparison gate
 - QEMU UEFI and BIOS remain regression environments
 - `Intel + UEFI`, `Intel + BIOS`, `AMD + UEFI`, and `AMD + BIOS` are not yet
   established because real-machine evidence is still missing

@@ -13,6 +13,7 @@ The automated GA gate is:
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
 - `python .\build\run_qemu_shellcheck.py`
 - `python .\build\run_qemu_desktopcheck.py`
+- `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1`
 - `python .\build\run_qemu_uefi_shellcheck.py`
 - `python .\build\run_qemu_uefi_stabilitycheck.py`
 - `python .\build\run_qemu_inboundcheck.py`
