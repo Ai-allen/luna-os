@@ -70,9 +70,14 @@ Required path:
   - `python .\build\run_qemu_shellcheck.py`
   - `python .\build\run_qemu_recoverycheck.py`
   - `python .\build\run_qemu_lsysfailurecheck.py`
+- installer target failure / recovery / idempotent retry:
+  - `python .\build\build.py`
+  - `python .\build\run_qemu_installer_applycheck.py`
+  - `python .\build\run_qemu_installer_failurecheck.py`
 - update/apply/activation:
   - `python .\build\build.py`
   - `python .\build\run_qemu_updateapplycheck.py`
+  - `python .\build\run_qemu_updaterollbackcheck.py`
   - `python .\build\run_qemu_fullregression.py`
 - ecosystem trust, `.luna`, `.la`, audit tooling:
   - `python .\build\build.py`

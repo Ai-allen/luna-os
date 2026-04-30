@@ -218,7 +218,7 @@ static const char g_msg_newline[] = "\r\n";
 static const char g_msg_help[] =
     "core: setup.status  setup.init <hostname> <username> <password>  login <username> <password>  logout  whoami  hostname  id  home.status\r\n"
     "apps: list-apps  run <app>  package.install <app>  package.remove <app>\r\n"
-    "settings: settings.status  update.status  update.apply  pairing.status  net.status  net.connect [peer]  net.send <text>  net.recv  net.info\r\n"
+    "settings: settings.status  update.status  update.apply  update.rollback  pairing.status  net.status  net.connect [peer]  net.send <text>  net.recv  net.info\r\n"
     "lasql: lasql.catalog  lasql.files  lasql.logs\r\n"
     "desktop: desktop.boot  desktop.menu  desktop.settings  desktop.launch <app>  desktop.files.prev  desktop.files.next  desktop.files.open  desktop.note <text>  desktop.minimize  desktop.maximize  desktop.close  exit\r\n"
     "diagnostics: net.external  net.loop  net.inbound  desktop.status  cap-count  cap-list  seal-list  list-spaces  space-map  space-log  store-info  store-check  list-devices  lane-census  pci-scan  revoke-cap <domain>\r\n";
@@ -2120,11 +2120,15 @@ static uint32_t update_check_status(uint64_t *out_current, uint64_t *out_target,
     return gate->status;
 }
 
-static uint32_t update_apply_status(uint64_t *out_current, uint64_t *out_target, uint64_t *out_flags) {
+static uint32_t update_apply_status(uint64_t request_flags, uint64_t *out_current, uint64_t *out_target, uint64_t *out_flags) {
     volatile struct luna_manifest *manifest =
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     volatile struct luna_update_gate *gate =
         (volatile struct luna_update_gate *)(uintptr_t)manifest->update_gate_base;
+    uint32_t status;
+    uint64_t current;
+    uint64_t target;
+    uint64_t flags;
     if ((g_update_apply_cid.low == 0u && g_update_apply_cid.high == 0u) &&
         request_capability(LUNA_CAP_UPDATE_APPLY, &g_update_apply_cid) != LUNA_GATE_OK) {
         return LUNA_UPDATE_ERR_INVALID_CAP;
@@ -2134,19 +2138,41 @@ static uint32_t update_apply_status(uint64_t *out_current, uint64_t *out_target,
     gate->opcode = LUNA_UPDATE_APPLY;
     gate->cid_low = g_update_apply_cid.low;
     gate->cid_high = g_update_apply_cid.high;
+    gate->flags = request_flags;
     ((void (SYSV_ABI *)(struct luna_update_gate *))(uintptr_t)manifest->update_gate_entry)(
         (struct luna_update_gate *)(uintptr_t)manifest->update_gate_base
     );
+    status = gate->status;
+    current = gate->current_version;
+    target = gate->target_version;
+    flags = gate->flags;
+    if (status == LUNA_UPDATE_OK &&
+        flags == LUNA_UPDATE_TXN_STATE_EMPTY &&
+        (current != 0u || target != 0u)) {
+        uint64_t checked_current = 0u;
+        uint64_t checked_target = 0u;
+        uint64_t checked_flags = 0u;
+        if (update_check_status(&checked_current, &checked_target, &checked_flags) == LUNA_UPDATE_OK &&
+            checked_flags != LUNA_UPDATE_TXN_STATE_EMPTY) {
+            current = checked_current;
+            target = checked_target;
+            flags = checked_flags;
+        } else if ((request_flags & LUNA_UPDATE_FLAG_ROLLBACK) != 0u) {
+            flags = LUNA_UPDATE_TXN_STATE_ROLLED_BACK;
+        } else {
+            flags = LUNA_UPDATE_TXN_STATE_COMMITTED;
+        }
+    }
     if (out_current != 0) {
-        *out_current = gate->current_version;
+        *out_current = current;
     }
     if (out_target != 0) {
-        *out_target = gate->target_version;
+        *out_target = target;
     }
     if (out_flags != 0) {
-        *out_flags = gate->flags;
+        *out_flags = flags;
     }
-    return gate->status;
+    return status;
 }
 
 static const char *update_state_label(uint64_t state) {
@@ -6547,7 +6573,7 @@ static void shell_execute(const char *line, size_t len) {
         uint64_t target = 0u;
         uint64_t flags = 0u;
         char digits[24];
-        if (update_apply_status(&current, &target, &flags) != LUNA_UPDATE_OK) {
+        if (update_apply_status(LUNA_UPDATE_FLAG_NONE, &current, &target, &flags) != LUNA_UPDATE_OK) {
             device_write("update.apply fail\r\n");
             device_write("update.result=unavailable\r\n");
             return;
@@ -6557,6 +6583,35 @@ static void shell_execute(const char *line, size_t len) {
             device_write("ok");
         } else if (flags == LUNA_UPDATE_TXN_STATE_FAILED) {
             device_write("fail");
+        } else {
+            device_write("noop");
+        }
+        device_write(g_msg_newline);
+        device_write("update.result state=");
+        device_write(update_state_label(flags));
+        device_write(" current=");
+        append_u64_decimal(digits, current);
+        device_write(digits);
+        device_write(" target=");
+        append_u64_decimal(digits, target);
+        device_write(digits);
+        device_write(g_msg_newline);
+        return;
+    }
+
+    if (len == 15u && chars_equal(line, "update.rollback", 15u)) {
+        uint64_t current = 0u;
+        uint64_t target = 0u;
+        uint64_t flags = 0u;
+        char digits[24];
+        if (update_apply_status(LUNA_UPDATE_FLAG_ROLLBACK, &current, &target, &flags) != LUNA_UPDATE_OK) {
+            device_write("update.rollback fail\r\n");
+            device_write("update.result=unavailable\r\n");
+            return;
+        }
+        device_write("update.rollback ");
+        if (flags == LUNA_UPDATE_TXN_STATE_ROLLED_BACK) {
+            device_write("ok");
         } else {
             device_write("noop");
         }

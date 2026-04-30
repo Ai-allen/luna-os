@@ -39,6 +39,10 @@ pub struct LunaBootView {
     pub installer_target_flags: u64,
     pub installer_target_system_lba: u64,
     pub installer_target_data_lba: u64,
+    pub firmware_path: u32,
+    pub firmware_flags: u32,
+    pub firmware_storage_status: u64,
+    pub firmware_display_status: u64,
 }
 
 #[repr(C)]
@@ -165,6 +169,13 @@ pub const LUNA_GATE_QUERY_GOVERN: u32 = 17;
 pub const LUNA_DATA_ERR_DENIED: u32 = 0xD106;
 pub const LUNA_DATA_ERR_READONLY: u32 = 0xD107;
 pub const LUNA_DATA_ERR_RECOVERY: u32 = 0xD108;
+pub const LUNA_DATA_VERIFY_FLAG_DIRTY: u32 = 1u32 << 0;
+pub const LUNA_DATA_VERIFY_FLAG_LAYOUT_MISMATCH: u32 = 1u32 << 1;
+pub const LUNA_DATA_VERIFY_FLAG_CHECKSUM_MISMATCH: u32 = 1u32 << 2;
+pub const LUNA_DATA_VERIFY_FLAG_INVALID_RECORDS: u32 = 1u32 << 3;
+pub const LUNA_DATA_VERIFY_FLAG_TXN_LOG_IO: u32 = 1u32 << 4;
+pub const LUNA_DATA_VERIFY_FLAG_TXN_AUX_IO: u32 = 1u32 << 5;
+pub const LUNA_DATA_VERIFY_FLAG_SLOT_IO: u32 = 1u32 << 6;
 pub const LUNA_VOLUME_HEALTHY: u32 = 1;
 pub const LUNA_VOLUME_DEGRADED: u32 = 2;
 pub const LUNA_VOLUME_RECOVERY_REQUIRED: u32 = 3;
@@ -182,6 +193,21 @@ pub const LUNA_MODE_READONLY: u32 = 2;
 pub const LUNA_MODE_RECOVERY: u32 = 3;
 pub const LUNA_MODE_FATAL: u32 = 4;
 pub const LUNA_MODE_INSTALL: u32 = 5;
+pub const LUNA_FIRMWARE_PATH_UNKNOWN: u32 = 0;
+pub const LUNA_FIRMWARE_PATH_UEFI: u32 = 1;
+pub const LUNA_FIRMWARE_PATH_BIOS: u32 = 2;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_HANDOFF: u32 = 1u32 << 0;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_READ: u32 = 1u32 << 1;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_WRITE: u32 = 1u32 << 2;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_TARGET_PRESENT: u32 = 1u32 << 3;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_TARGET_READ: u32 = 1u32 << 4;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_TARGET_WRITE: u32 = 1u32 << 5;
+pub const LUNA_FIRMWARE_FLAG_STORAGE_TARGET_SEPARATE: u32 = 1u32 << 6;
+pub const LUNA_FIRMWARE_FLAG_DISPLAY_HANDOFF: u32 = 1u32 << 7;
+pub const LUNA_FIRMWARE_FLAG_DISPLAY_FRAMEBUFFER: u32 = 1u32 << 8;
+pub const LUNA_FIRMWARE_DISPLAY_ABSENT: u64 = 0;
+pub const LUNA_FIRMWARE_DISPLAY_READY: u64 = 1;
+pub const LUNA_FIRMWARE_DISPLAY_INVALID: u64 = 2;
 pub const LUNA_GOVERN_MOUNT: u32 = 1;
 pub const LUNA_GOVERN_WRITE: u32 = 2;
 pub const LUNA_GOVERN_COMMIT: u32 = 3;

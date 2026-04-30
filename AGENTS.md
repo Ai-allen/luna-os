@@ -136,6 +136,8 @@ python .\build\run_qemu_uefi_stabilitycheck.py
 python .\build\run_qemu_inboundcheck.py
 python .\build\run_qemu_externalstackcheck.py
 python .\build\run_qemu_updateapplycheck.py
+python .\build\run_qemu_updaterollbackcheck.py
+python .\build\run_qemu_installer_failurecheck.py
 python .\build\run_qemu_fullregression.py
 ```
 
@@ -144,12 +146,13 @@ Targeted storage failure / recovery regression path:
 ```powershell
 python .\build\run_qemu_recoverycheck.py
 python .\build\run_qemu_lsysfailurecheck.py
+python .\build\run_qemu_installer_failurecheck.py
 ```
 
 These focused checks preserve current storage-rooted failure, activation
-recovery, and stop-before-product-space behavior. They do not replace the
-primary frozen validation set, but they are required when changes touch those
-paths.
+recovery, installer failure/retry/idempotency, and stop-before-product-space
+behavior. They do not replace the primary frozen validation set, but they are
+required when changes touch those paths.
 
 Developer ecosystem entry:
 
@@ -224,6 +227,10 @@ approved post-freeze contract work.
   - `python .\build\run_qemu_shellcheck.py`
   - `python .\build\run_qemu_recoverycheck.py`
   - `python .\build\run_qemu_lsysfailurecheck.py`
+- Native install / installer target failure / idempotent retry:
+  - `python .\build\build.py`
+  - `python .\build\run_qemu_installer_applycheck.py`
+  - `python .\build\run_qemu_installer_failurecheck.py`
 - Shell-visible product behavior:
   - `python .\build\build.py`
   - `python .\build\run_qemu_shellcheck.py`
@@ -247,6 +254,7 @@ approved post-freeze contract work.
 - Update apply / activation:
   - `python .\build\build.py`
   - `python .\build\run_qemu_updateapplycheck.py`
+  - `python .\build\run_qemu_updaterollbackcheck.py`
   - `python .\build\run_qemu_fullregression.py`
 - `.luna` / `.la` / trust-chain / audit changes:
   - `python .\build\build.py`

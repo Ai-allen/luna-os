@@ -16,6 +16,8 @@ The current frozen gates are:
 - `python .\build\run_qemu_inboundcheck.py`
 - `python .\build\run_qemu_externalstackcheck.py`
 - `python .\build\run_qemu_updateapplycheck.py`
+- `python .\build\run_qemu_updaterollbackcheck.py`
+- `python .\build\run_qemu_installer_failurecheck.py`
 - `python .\build\run_qemu_fullregression.py`
 
 Current non-gating bring-up tooling sanity path:
@@ -93,6 +95,8 @@ Required path:
 
 - `python .\build\build.py`
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
+- `python .\build\run_qemu_installer_applycheck.py`
+- `python .\build\run_qemu_installer_failurecheck.py`
 - fresh image first boot reaches `first-setup required`
 - fresh image `setup.init luna dev secret` returns
   `setup.init ok: host and first user created`
@@ -107,6 +111,30 @@ Frozen contract assertions:
 - `SECURITY` remains the mount/write/commit/replay governance gate
 - `DATA` must reject unauthorized or readonly mutation
 - fresh split-image must not degrade to readonly during first setup
+
+## Installer Failure / Recovery / Idempotency Gate
+
+This gate preserves the installer target failure boundary. It is a virtualized
+regression gate, not a hardware support-cell claim.
+
+Required path:
+
+- `python .\build\build.py`
+- `python .\build\run_qemu_installer_failurecheck.py`
+
+Frozen current assertions:
+
+- an undersized installer target must enter installer media mode, bind the
+  target, prove writer identity, fail at the GPT backup boundary, and emit
+  `[SYSTEM] installer gate=blocked`
+- the failed installer attempt must stop before `DATA`, `PACKAGE`, `UPDATE`,
+  `USER`, first setup, and shell readiness
+- host-side installer verification must reject the partial target layout
+- retry on a correctly sized target must write ESP, LSYS, LDAT, and LRCV,
+  verify LRCV, and emit `[INSTALLER] verify ok`
+- an idempotent retry must leave the verified native layout unchanged
+- booting the recovered target must report firmware block handoff, LSYS super
+  read, native pair validation, normal boot continuation, and first setup
 
 ## Targeted Storage Failure / Recovery Checks
 
@@ -355,6 +383,21 @@ Frozen current assertions:
 - final confirmation must report `update mode=read-only action=applied`,
   `update state=active current=2 target=2`, retain `sample.luna`, and allow
   `run sample`.
+
+## updaterollbackcheck Baseline
+
+- the staged and committed update path must first match the
+  `updateapplycheck` activation assertions.
+- after activation confirms `current=2 target=2`, `update.rollback` must emit
+  `audit recovery.persisted=DATA authority=UPDATE`, return
+  `update.rollback ok`, and report
+  `update.result state=rolled_back current=1 target=2`.
+- the rollback boot must retain `sample.luna`, allow `run sample`, and must
+  not emit `audit recovery.denied reason=rollback`, `update.rollback fail`,
+  `update.result state=committed`, or
+  `update state=active current=2 target=2`.
+- a following reboot must persist `update state=rolled_back current=1 target=2`
+  and keep `sample.luna` launchable.
 
 ## inboundcheck Baseline
 

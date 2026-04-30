@@ -229,6 +229,70 @@ static int has_firmware_block_handoff(const volatile struct luna_uefi_disk_hando
     return disk_handoff->block_io_protocol != 0u && disk_handoff->read_blocks_entry != 0u;
 }
 
+static uint32_t firmware_path(
+    const volatile struct luna_uefi_disk_handoff *disk_handoff,
+    const volatile struct luna_uefi_graphics_handoff *graphics_handoff
+) {
+    if ((disk_handoff != 0 && disk_handoff->magic == LUNA_UEFI_DISK_MAGIC) ||
+        (graphics_handoff != 0 && graphics_handoff->magic == LUNA_UEFI_GRAPHICS_MAGIC)) {
+        return LUNA_FIRMWARE_PATH_UEFI;
+    }
+    return LUNA_FIRMWARE_PATH_UNKNOWN;
+}
+
+static uint32_t firmware_flags(
+    const volatile struct luna_uefi_disk_handoff *disk_handoff,
+    const volatile struct luna_uefi_graphics_handoff *graphics_handoff
+) {
+    uint32_t flags = 0u;
+
+    if (disk_handoff != 0 && disk_handoff->magic == LUNA_UEFI_DISK_MAGIC) {
+        flags |= LUNA_FIRMWARE_FLAG_STORAGE_HANDOFF;
+        if (disk_handoff->block_io_protocol != 0u && disk_handoff->read_blocks_entry != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_READ;
+        }
+        if (disk_handoff->block_io_protocol != 0u && disk_handoff->write_blocks_entry != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_WRITE;
+        }
+        if ((disk_handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_PRESENT) != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_TARGET_PRESENT;
+        }
+        if (disk_handoff->target_block_io_protocol != 0u && disk_handoff->target_read_blocks_entry != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_TARGET_READ;
+        }
+        if (disk_handoff->target_block_io_protocol != 0u && disk_handoff->target_write_blocks_entry != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_TARGET_WRITE;
+        }
+        if ((disk_handoff->flags & LUNA_UEFI_DISK_FLAG_TARGET_SEPARATE) != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_STORAGE_TARGET_SEPARATE;
+        }
+    }
+    if (graphics_handoff != 0 && graphics_handoff->magic == LUNA_UEFI_GRAPHICS_MAGIC) {
+        flags |= LUNA_FIRMWARE_FLAG_DISPLAY_HANDOFF;
+        if (graphics_handoff->framebuffer_base != 0u && graphics_handoff->framebuffer_size != 0u) {
+            flags |= LUNA_FIRMWARE_FLAG_DISPLAY_FRAMEBUFFER;
+        }
+    }
+    return flags;
+}
+
+static uint64_t firmware_storage_status(const volatile struct luna_uefi_disk_handoff *disk_handoff) {
+    if (disk_handoff == 0 || disk_handoff->magic != LUNA_UEFI_DISK_MAGIC) {
+        return 0u;
+    }
+    return disk_handoff->diag_status;
+}
+
+static uint64_t firmware_display_status(const volatile struct luna_uefi_graphics_handoff *graphics_handoff) {
+    if (graphics_handoff == 0 || graphics_handoff->magic != LUNA_UEFI_GRAPHICS_MAGIC) {
+        return LUNA_FIRMWARE_DISPLAY_ABSENT;
+    }
+    if (graphics_handoff->framebuffer_base != 0u && graphics_handoff->framebuffer_size != 0u) {
+        return LUNA_FIRMWARE_DISPLAY_READY;
+    }
+    return LUNA_FIRMWARE_DISPLAY_INVALID;
+}
+
 static uint32_t validate_native_pair(volatile struct luna_bootview *bootview) {
     struct luna_store_superblock system_super;
     struct luna_store_superblock data_super;
@@ -413,6 +477,10 @@ void SYSV_ABI boot_main(void) {
     if (is_installer_media_boot(disk_handoff)) {
         apply_storage_gate(bootview, LUNA_VOLUME_HEALTHY, LUNA_MODE_INSTALL);
     }
+    bootview->firmware_path = firmware_path(disk_handoff, graphics_handoff);
+    bootview->firmware_flags = firmware_flags(disk_handoff, graphics_handoff);
+    bootview->firmware_storage_status = firmware_storage_status(disk_handoff);
+    bootview->firmware_display_status = firmware_display_status(graphics_handoff);
     serial_write(msg_bootview_done);
     serial_write("[BOOT] manifest bootview=");
     serial_write_hex64(manifest->bootview_base);

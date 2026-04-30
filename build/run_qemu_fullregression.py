@@ -161,11 +161,15 @@ def main() -> int:
     steps = [
         ("build", [sys.executable, str(ROOT / "build.py")], ROOT),
         ("bootcheck", [powershell, "-NoProfile", "-File", str(ROOT / "run_qemu_bootcheck.ps1")], ROOT),
-        ("shellcheck", [powershell, "-NoProfile", "-File", str(ROOT / "run_qemu_shellcheck.ps1")], ROOT),
+        ("shellcheck", [sys.executable, str(ROOT / "run_qemu_shellcheck.py")], ROOT),
         ("desktopcheck", [sys.executable, str(ROOT / "run_qemu_desktopcheck.py")], ROOT),
-        ("uefi-bootcheck", [powershell, "-NoProfile", "-File", str(ROOT / "run_qemu_uefi_bootcheck.ps1")], ROOT),
-        ("uefi-shellcheck", [powershell, "-NoProfile", "-File", str(ROOT / "run_qemu_uefi_shellcheck.ps1")], ROOT),
-        ("uefi-stabilitycheck", [powershell, "-NoProfile", "-File", str(ROOT / "run_qemu_uefi_stabilitycheck.ps1")], ROOT),
+        ("uefi-shellcheck", [sys.executable, str(ROOT / "run_qemu_uefi_shellcheck.py")], ROOT),
+        ("uefi-stabilitycheck", [sys.executable, str(ROOT / "run_qemu_uefi_stabilitycheck.py")], ROOT),
+        ("inboundcheck", [sys.executable, str(ROOT / "run_qemu_inboundcheck.py")], ROOT),
+        ("externalstackcheck", [sys.executable, str(ROOT / "run_qemu_externalstackcheck.py")], ROOT),
+        ("updateapplycheck", [sys.executable, str(ROOT / "run_qemu_updateapplycheck.py")], ROOT),
+        ("updaterollbackcheck", [sys.executable, str(ROOT / "run_qemu_updaterollbackcheck.py")], ROOT),
+        ("installer-failurecheck", [sys.executable, str(ROOT / "run_qemu_installer_failurecheck.py")], ROOT),
     ]
 
     summary: dict[str, object] = {

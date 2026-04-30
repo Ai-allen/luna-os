@@ -79,10 +79,6 @@ const LAST_REPAIR_LAYOUT_INSTALL_LOW: u64 = 0x1006;
 const LAST_REPAIR_LAYOUT_INSTALL_HIGH: u64 = 0x1007;
 const LAST_REPAIR_LAYOUT_PEER_LBA: u64 = 0x1008;
 const LAST_REPAIR_LAYOUT_CHECKSUM: u64 = 0x1009;
-const VERIFY_FLAG_DIRTY: u32 = 1;
-const VERIFY_FLAG_LAYOUT_MISMATCH: u32 = 2;
-const VERIFY_FLAG_CHECKSUM_MISMATCH: u32 = 4;
-const VERIFY_FLAG_INVALID_RECORDS: u32 = 8;
 const STATUS_DENIED: u32 = 0xD106;
 const STATUS_READONLY: u32 = 0xD107;
 const STATUS_RECOVERY: u32 = 0xD108;
@@ -585,6 +581,41 @@ fn governance_mount(state: u32) -> bool {
     !matches!(query.result_state, VOLUME_FATAL_INCOMPATIBLE | VOLUME_FATAL_UNRECOVERABLE)
 }
 
+fn driver_storage_floor_active() -> bool {
+    matches!(bootview().system_mode, MODE_READONLY | MODE_RECOVERY)
+}
+
+fn driver_storage_fatal_floor_active() -> bool {
+    bootview().system_mode == MODE_FATAL
+        && matches!(
+            bootview().volume_state,
+            VOLUME_FATAL_INCOMPATIBLE | VOLUME_FATAL_UNRECOVERABLE
+        )
+}
+
+fn continue_driver_storage_floor() -> bool {
+    let view = bootview();
+    let (verify_flags, _) = unsafe { inspect_store_integrity() };
+    let target_state = driver_floor_target_state(view.volume_state, verify_flags);
+    observe_driver_storage_verify(verify_flags);
+    if target_state == VOLUME_RECOVERY_REQUIRED {
+        let _ = device_write(b"[DATA] driver floor=verify-recovery\r\n");
+    } else if verify_flags != 0 {
+        let _ = device_write(b"[DATA] driver floor=verify-degraded\r\n");
+    } else if view.system_mode == MODE_RECOVERY {
+        let _ = device_write(b"[DATA] driver floor=recovery\r\n");
+    } else {
+        let _ = device_write(b"[DATA] driver floor=readonly\r\n");
+    }
+    governance_mount(target_state)
+}
+
+fn block_driver_storage_repair(reason: &[u8]) -> bool {
+    let _ = device_write(reason);
+    let _ = governance_mount(VOLUME_RECOVERY_REQUIRED);
+    false
+}
+
 fn reject_mutation_status() -> u32 {
     match unsafe { SUPERBLOCK.reserved[5] as u32 } {
         MODE_READONLY => STATUS_READONLY,
@@ -852,7 +883,11 @@ unsafe fn load_bytes_from_disk(lba: u32, ptr: *mut u8, len: usize) -> bool {
     while i < sectors {
         let offset = i * 512;
         let chunk = core::cmp::min(512usize, len.saturating_sub(offset));
-        if !unsafe { ata_read_sector(lba + i as u32, addr_of_mut!(SECTOR_BUFFER) as *mut u8) } {
+        let sector_lba = lba + i as u32;
+        if !unsafe { ata_read_sector(sector_lba, addr_of_mut!(SECTOR_BUFFER) as *mut u8) }
+            && (!driver_storage_floor_active()
+                || !unsafe { ata_read_sector(sector_lba, addr_of_mut!(SECTOR_BUFFER) as *mut u8) })
+        {
             return false;
         }
         unsafe {
@@ -1010,6 +1045,109 @@ unsafe fn metadata_layout_mismatch_reason() -> u64 {
             LAST_REPAIR_METADATA
         }
     }
+}
+
+fn storage_verify_requires_recovery(flags: u32) -> bool {
+    (flags
+        & (LUNA_DATA_VERIFY_FLAG_DIRTY
+            | LUNA_DATA_VERIFY_FLAG_LAYOUT_MISMATCH
+            | LUNA_DATA_VERIFY_FLAG_CHECKSUM_MISMATCH
+            | LUNA_DATA_VERIFY_FLAG_TXN_LOG_IO
+            | LUNA_DATA_VERIFY_FLAG_TXN_AUX_IO
+            | LUNA_DATA_VERIFY_FLAG_SLOT_IO))
+        != 0
+}
+
+fn driver_floor_target_state(current_state: u32, verify_flags: u32) -> u32 {
+    let mut state = if current_state == 0 {
+        VOLUME_HEALTHY
+    } else {
+        current_state
+    };
+    if storage_verify_requires_recovery(verify_flags) {
+        if state < VOLUME_RECOVERY_REQUIRED {
+            state = VOLUME_RECOVERY_REQUIRED;
+        }
+    } else if (verify_flags & LUNA_DATA_VERIFY_FLAG_INVALID_RECORDS) != 0 && state == VOLUME_HEALTHY {
+        state = VOLUME_DEGRADED;
+    }
+    state
+}
+
+fn observe_driver_storage_verify(flags: u32) {
+    if flags == 0 {
+        return;
+    }
+    if (flags
+        & (LUNA_DATA_VERIFY_FLAG_DIRTY
+            | LUNA_DATA_VERIFY_FLAG_LAYOUT_MISMATCH
+            | LUNA_DATA_VERIFY_FLAG_CHECKSUM_MISMATCH))
+        != 0
+    {
+        let _ = observe_log(b"drvrec storage=metadata");
+    }
+    if (flags & LUNA_DATA_VERIFY_FLAG_INVALID_RECORDS) != 0 {
+        let _ = observe_log(b"drvrec storage=object-records");
+    }
+    if (flags & LUNA_DATA_VERIFY_FLAG_TXN_LOG_IO) != 0 {
+        let _ = observe_log(b"drvrec storage=txn-log");
+    }
+    if (flags & LUNA_DATA_VERIFY_FLAG_TXN_AUX_IO) != 0 {
+        let _ = observe_log(b"drvrec storage=txn-aux");
+    }
+    if (flags & LUNA_DATA_VERIFY_FLAG_SLOT_IO) != 0 {
+        let _ = observe_log(b"drvrec storage=slot-read");
+    }
+}
+
+unsafe fn inspect_store_integrity() -> (u32, u32) {
+    let mut flags = 0u32;
+    let mut invalid_count = 0u32;
+    if unsafe { SUPERBLOCK.reserved[0] } == STORE_STATE_DIRTY {
+        flags |= LUNA_DATA_VERIFY_FLAG_DIRTY;
+    }
+    if !unsafe { metadata_matches_layout() } {
+        flags |= LUNA_DATA_VERIFY_FLAG_LAYOUT_MISMATCH;
+    }
+    if unsafe { SUPERBLOCK.reserved[1] } != unsafe { object_checksum() } {
+        flags |= LUNA_DATA_VERIFY_FLAG_CHECKSUM_MISMATCH;
+    }
+    let mut txn = EMPTY_TXN;
+    if !unsafe { load_txn_record(&mut txn) } {
+        flags |= LUNA_DATA_VERIFY_FLAG_TXN_LOG_IO;
+    }
+    let mut header = EMPTY_LARGE_HEADER;
+    if !unsafe { load_txn_aux(&mut header) } {
+        flags |= LUNA_DATA_VERIFY_FLAG_TXN_AUX_IO;
+    }
+    let mut index = 0usize;
+    while index < OBJECT_CAPACITY {
+        let record = unsafe { *object_ptr(index) };
+        if record.live == 1 {
+            let slot_count = unsafe { object_slot_count(&record) };
+            if !valid_slot_index(record.slot_index)
+                || slot_count.is_none()
+                || (!is_large_object(&record) && record.size > SLOT_BYTES)
+                || record.object_low == 0
+                || record.object_high == 0
+                || record.created_at == 0
+                || record.modified_at == 0
+            {
+                invalid_count = invalid_count.wrapping_add(1);
+            } else if record.size != 0
+                && !unsafe { load_bytes_from_disk(object_slot_lba(record.slot_index as usize), addr_of_mut!(SECTOR_BUFFER) as *mut u8, SLOT_BYTES_USIZE) }
+            {
+                flags |= LUNA_DATA_VERIFY_FLAG_SLOT_IO;
+            }
+        } else if record.live != 0 {
+            invalid_count = invalid_count.wrapping_add(1);
+        }
+        index += 1;
+    }
+    if invalid_count != 0 {
+        flags |= LUNA_DATA_VERIFY_FLAG_INVALID_RECORDS;
+    }
+    (flags, invalid_count)
 }
 
 unsafe fn scrub_invalid_records() -> u32 {
@@ -1256,6 +1394,9 @@ unsafe fn load_store() -> bool {
                 let _ = device_write(b"[DATA] install-mode readonly\r\n");
                 return enter_install_readonly_empty();
             }
+            if driver_storage_floor_active() {
+                return block_driver_storage_repair(b"[DATA] driver floor=format-blocked\r\n");
+            }
             let _ = device_write(b"[DATA] format store\r\n");
             return format_store();
         }
@@ -1274,6 +1415,17 @@ unsafe fn load_store() -> bool {
             }
             set_volume_runtime(VOLUME_HEALTHY, MODE_INSTALL);
             return true;
+        }
+        if driver_storage_fatal_floor_active() {
+            let _ = device_write(b"[DATA] driver floor=fatal\r\n");
+            set_volume_runtime(bootview().volume_state, MODE_FATAL);
+            return true;
+        }
+        if driver_storage_floor_active() {
+            if !metadata_matches_layout() || SUPERBLOCK.reserved[0] == STORE_STATE_DIRTY {
+                return block_driver_storage_repair(b"[DATA] driver floor=repair-blocked\r\n");
+            }
+            return continue_driver_storage_floor();
         }
         let replay_result = replay_transaction();
         if replay_result != LAST_REPAIR_NONE {
@@ -2864,41 +3016,19 @@ unsafe fn verify_store(gate: &mut LunaDataGate) {
     }
 
     let mut live_count = 0u32;
-    let mut invalid_count = 0u32;
     let mut index = 0usize;
     while index < OBJECT_CAPACITY {
         let record = unsafe { *object_ptr(index) };
         if record.live == 1 {
             live_count = live_count.wrapping_add(1);
-            if !valid_slot_index(record.slot_index)
-                || unsafe { object_slot_count(&record) }.is_none()
-                || (!is_large_object(&record) && record.size > SLOT_BYTES)
-                || record.object_low == 0
-                || record.object_high == 0
-                || record.created_at == 0
-                || record.modified_at == 0
-            {
-                invalid_count = invalid_count.wrapping_add(1);
-            }
         }
         index += 1;
     }
+    let (verify_flags, invalid_count) = unsafe { inspect_store_integrity() };
 
     gate.result_count = live_count;
     gate.object_type = unsafe { SUPERBLOCK.version };
-    gate.object_flags = 0;
-    if unsafe { SUPERBLOCK.reserved[0] } == STORE_STATE_DIRTY {
-        gate.object_flags |= VERIFY_FLAG_DIRTY;
-    }
-    if !unsafe { metadata_matches_layout() } {
-        gate.object_flags |= VERIFY_FLAG_LAYOUT_MISMATCH;
-    }
-    if unsafe { SUPERBLOCK.reserved[1] } != unsafe { object_checksum() } {
-        gate.object_flags |= VERIFY_FLAG_CHECKSUM_MISMATCH;
-    }
-    if invalid_count != 0 {
-        gate.object_flags |= VERIFY_FLAG_INVALID_RECORDS;
-    }
+    gate.object_flags = verify_flags;
     gate.size = invalid_count as u64;
     gate.created_at = unsafe { SUPERBLOCK.format_count };
     gate.content_size = unsafe { SUPERBLOCK.mount_count };

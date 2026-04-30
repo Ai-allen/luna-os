@@ -57,6 +57,7 @@ static struct luna_cid g_package_install_cid = {0, 0};
 static volatile struct luna_manifest *g_manifest = 0;
 static struct luna_bootview g_bootview = {0};
 static uint8_t g_update_bundle_stage[16384];
+static uint8_t g_update_rollback_stage[16384];
 
 static void device_write(const char *text);
 
@@ -449,34 +450,6 @@ static uint32_t data_set_add_member(struct luna_cid cid, struct luna_object_ref 
     return gate->status;
 }
 
-static uint32_t data_set_remove_member(struct luna_cid cid, struct luna_object_ref set_object, struct luna_object_ref member) {
-    volatile struct luna_data_gate *gate = (volatile struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base;
-    zero_bytes((void *)(uintptr_t)g_manifest->data_gate_base, sizeof(struct luna_data_gate));
-    gate->sequence = 50;
-    gate->opcode = LUNA_DATA_SET_REMOVE_MEMBER;
-    gate->cid_low = cid.low;
-    gate->cid_high = cid.high;
-    gate->object_low = set_object.low;
-    gate->object_high = set_object.high;
-    gate->buffer_addr = (uint64_t)(uintptr_t)&member;
-    gate->buffer_size = sizeof(member);
-    ((void (SYSV_ABI *)(struct luna_data_gate *))(uintptr_t)g_manifest->data_gate_entry)((struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base);
-    return gate->status;
-}
-
-static uint32_t data_shred_object(struct luna_cid cid, struct luna_object_ref object) {
-    volatile struct luna_data_gate *gate = (volatile struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base;
-    zero_bytes((void *)(uintptr_t)g_manifest->data_gate_base, sizeof(struct luna_data_gate));
-    gate->sequence = 51;
-    gate->opcode = LUNA_DATA_SHRED_OBJECT;
-    gate->cid_low = cid.low;
-    gate->cid_high = cid.high;
-    gate->object_low = object.low;
-    gate->object_high = object.high;
-    ((void (SYSV_ABI *)(struct luna_data_gate *))(uintptr_t)g_manifest->data_gate_entry)((struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base);
-    return gate->status;
-}
-
 static int find_install_record_by_name(const char *name, struct luna_package_install_record *out_record) {
     struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
     uint32_t count = 0u;
@@ -581,6 +554,72 @@ static int current_target_install(struct luna_package_install_record *out_record
     return load_package_state() && find_install_record_by_name(LUNA_UPDATE_TARGET_NAME, out_record);
 }
 
+static int validate_bundle_blob(void *buffer, uint64_t content_size, const char *name) {
+    struct luna_bundle_header *bundle = (struct luna_bundle_header *)buffer;
+    if (content_size < sizeof(struct luna_bundle_header) ||
+        bundle->magic != LUNA_PROGRAM_BUNDLE_MAGIC ||
+        bundle->version != LUNA_PROGRAM_BUNDLE_VERSION) {
+        return 0;
+    }
+    if (bundle->header_bytes < sizeof(struct luna_bundle_header) ||
+        bundle->entry_offset < bundle->header_bytes ||
+        bundle->entry_offset >= content_size) {
+        return 0;
+    }
+    return names_equal(bundle->name, name);
+}
+
+static int read_bundle_object(
+    struct luna_object_ref object,
+    void *buffer,
+    uint64_t buffer_size,
+    uint64_t *out_size
+) {
+    uint64_t size = 0u;
+    uint64_t content_size = 0u;
+    if (buffer == 0 || buffer_size < sizeof(struct luna_bundle_header)) {
+        return 0;
+    }
+    if (data_draw_span(g_data_draw_cid, object, 0u, buffer, buffer_size, &size, &content_size) != LUNA_DATA_OK ||
+        content_size > buffer_size ||
+        !validate_bundle_blob(buffer, content_size, LUNA_UPDATE_TARGET_NAME)) {
+        return 0;
+    }
+    if (out_size != 0) {
+        *out_size = content_size;
+    }
+    return 1;
+}
+
+static int persist_rollback_backup(
+    const struct luna_package_install_record *current,
+    struct luna_object_ref *out_ref
+) {
+    struct luna_bundle_header *bundle = 0;
+    struct luna_object_ref backup = {0u, 0u};
+    uint64_t size = 0u;
+    if (current == 0 || out_ref == 0) {
+        return 0;
+    }
+    *out_ref = (struct luna_object_ref){0u, 0u};
+    if (!read_bundle_object(current->app_object, g_update_rollback_stage, sizeof(g_update_rollback_stage), &size)) {
+        return 0;
+    }
+    bundle = (struct luna_bundle_header *)g_update_rollback_stage;
+    if (bundle->app_version != current->app_version) {
+        return 0;
+    }
+    if (data_seed_object(g_data_seed_cid, LUNA_PACKAGE_UPDATE_TXN_MAGIC, 0u, &backup) != LUNA_DATA_OK ||
+        data_pour_span(g_data_pour_cid, backup, g_update_rollback_stage, size) != LUNA_DATA_OK) {
+        return 0;
+    }
+    if (g_package_state.rollback_refs_set.low != 0u || g_package_state.rollback_refs_set.high != 0u) {
+        (void)data_set_add_member(g_data_pour_cid, g_package_state.rollback_refs_set, backup);
+    }
+    *out_ref = backup;
+    return 1;
+}
+
 static int prepare_candidate_bundle(
     struct luna_package_install_record *out_current,
     void **out_buffer,
@@ -604,15 +643,7 @@ static int prepare_candidate_bundle(
         return 0;
     }
     bundle = (struct luna_bundle_header *)buffer;
-    if (bundle->magic != LUNA_PROGRAM_BUNDLE_MAGIC || bundle->version != LUNA_PROGRAM_BUNDLE_VERSION) {
-        return 0;
-    }
-    if (bundle->header_bytes < sizeof(struct luna_bundle_header) ||
-        bundle->entry_offset < bundle->header_bytes ||
-        bundle->entry_offset >= content_size) {
-        return 0;
-    }
-    if (!names_equal(bundle->name, LUNA_UPDATE_TARGET_NAME)) {
+    if (!validate_bundle_blob(buffer, content_size, LUNA_UPDATE_TARGET_NAME)) {
         return 0;
     }
     bundle->app_version = current.app_version + 1u;
@@ -810,42 +841,25 @@ static int persist_update_txn(const struct luna_package_update_txn_record *txn) 
 }
 
 static int rollback_txn(struct luna_package_update_txn_record *txn, uint32_t final_state) {
+    struct luna_package_install_record restored;
     struct luna_store_superblock system_super;
     struct luna_store_superblock data_super;
-    if ((txn->new_app_object.low != 0u || txn->new_app_object.high != 0u) &&
-        data_set_remove_member(g_data_pour_cid, g_package_state.installed_apps_set, txn->new_app_object) != LUNA_DATA_OK) {
+    uint64_t rollback_size = 0u;
+    uint64_t rollback_version = 0u;
+    struct luna_bundle_header *bundle = 0;
+
+    if (txn == 0 ||
+        (txn->old_app_object.low == 0u && txn->old_app_object.high == 0u) ||
+        !read_bundle_object(txn->old_app_object, g_update_bundle_stage, sizeof(g_update_bundle_stage), &rollback_size)) {
         return 0;
     }
-    if ((txn->new_install_object.low != 0u || txn->new_install_object.high != 0u) &&
-        data_set_remove_member(g_data_pour_cid, g_package_state.install_records_set, txn->new_install_object) != LUNA_DATA_OK) {
+    bundle = (struct luna_bundle_header *)g_update_bundle_stage;
+    rollback_version = bundle->app_version;
+    if (!package_remove_name(txn->name) || !package_install_blob(g_update_bundle_stage, rollback_size)) {
         return 0;
     }
-    if ((txn->new_index_object.low != 0u || txn->new_index_object.high != 0u) &&
-        data_set_remove_member(g_data_pour_cid, g_package_state.app_index_set, txn->new_index_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->old_app_object.low != 0u || txn->old_app_object.high != 0u) &&
-        data_set_add_member(g_data_pour_cid, g_package_state.installed_apps_set, txn->old_app_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->old_install_object.low != 0u || txn->old_install_object.high != 0u) &&
-        data_set_add_member(g_data_pour_cid, g_package_state.install_records_set, txn->old_install_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->old_index_object.low != 0u || txn->old_index_object.high != 0u) &&
-        data_set_add_member(g_data_pour_cid, g_package_state.app_index_set, txn->old_index_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->new_app_object.low != 0u || txn->new_app_object.high != 0u) &&
-        data_shred_object(g_data_shred_cid, txn->new_app_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->new_install_object.low != 0u || txn->new_install_object.high != 0u) &&
-        data_shred_object(g_data_shred_cid, txn->new_install_object) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((txn->new_index_object.low != 0u || txn->new_index_object.high != 0u) &&
-        data_shred_object(g_data_shred_cid, txn->new_index_object) != LUNA_DATA_OK) {
+    if (!load_package_state() || !find_install_record_by_name(txn->name, &restored) ||
+        restored.app_version != rollback_version) {
         return 0;
     }
     if (load_install_contract(&system_super, &data_super)) {
@@ -855,9 +869,9 @@ static int rollback_txn(struct luna_package_update_txn_record *txn, uint32_t fin
         }
     }
     txn->state = final_state;
+    txn->current_version = restored.app_version;
     txn->activation_state = LUNA_ACTIVATION_ACTIVE;
-    g_package_state.update_txn_object = g_latest_txn_ref;
-    return persist_package_state() && persist_update_txn(txn);
+    return persist_update_txn(txn);
 }
 
 static int recover_incomplete_txn(void) {
@@ -939,6 +953,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
         struct luna_package_update_txn_record txn;
         struct luna_store_superblock system_super;
         struct luna_store_superblock data_super;
+        struct luna_object_ref rollback_backup = {0u, 0u};
         void *bundle = 0;
         uint64_t bundle_size = 0u;
         uint64_t target_version = 0u;
@@ -958,12 +973,31 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
                 return;
             }
             device_write("audit recovery.persisted=DATA authority=UPDATE\r\n");
+            if (load_package_state() && load_latest_update_txn(&txn)) {
+                gate->current_version = txn.current_version;
+                gate->target_version = txn.target_version;
+                gate->flags = txn.state;
+            } else {
+                gate->current_version = 0u;
+                gate->target_version = 0u;
+                gate->flags = LUNA_UPDATE_TXN_STATE_ROLLED_BACK;
+            }
+            gate->status = LUNA_UPDATE_OK;
+            return;
         }
         if (!prepare_candidate_bundle(&current, &bundle, &bundle_size, &target_version) ||
             target_version <= current.app_version) {
             gate->current_version = 0u;
             gate->target_version = 0u;
             gate->flags = LUNA_UPDATE_TXN_STATE_EMPTY;
+            gate->status = LUNA_UPDATE_OK;
+            return;
+        }
+        if (!persist_rollback_backup(&current, &rollback_backup)) {
+            route_storage_failure("audit update.apply denied reason=rollback-backup\r\n");
+            gate->current_version = current.app_version;
+            gate->target_version = target_version;
+            gate->flags = LUNA_UPDATE_TXN_STATE_FAILED;
             gate->status = LUNA_UPDATE_OK;
             return;
         }
@@ -982,7 +1016,13 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
         txn.kind = LUNA_PACKAGE_UPDATE_KIND_REPLACE;
         txn.current_version = current.app_version;
         txn.target_version = target_version;
-        txn.old_app_object = current.app_object;
+        txn.old_app_object = rollback_backup;
+        if (load_package_state()) {
+            struct luna_package_install_record installed;
+            if (find_install_record_by_name(LUNA_UPDATE_TARGET_NAME, &installed)) {
+                txn.new_app_object = installed.app_object;
+            }
+        }
         txn.activation_state = LUNA_ACTIVATION_COMMITTED;
         copy_name16(txn.name, LUNA_UPDATE_TARGET_NAME);
         system_super.reserved[LUNA_NATIVE_RESERVED_ACTIVATION] = LUNA_ACTIVATION_COMMITTED;
@@ -1007,7 +1047,8 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
                 device_write("audit update.apply activation=COMMITTED\r\n");
                 gate->current_version = committed_txn.current_version;
                 gate->target_version = committed_txn.target_version;
-                gate->flags = committed_txn.state;
+                gate->flags = LUNA_UPDATE_TXN_STATE_COMMITTED;
+                gate->result_count = 1u;
                 gate->status = LUNA_UPDATE_OK;
                 return;
             }
@@ -1022,7 +1063,8 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
         device_write("audit update.apply activation=COMMITTED\r\n");
         gate->current_version = txn.current_version;
         gate->target_version = txn.target_version;
-        gate->flags = txn.state;
+        gate->flags = LUNA_UPDATE_TXN_STATE_COMMITTED;
+        gate->result_count = 1u;
         gate->status = LUNA_UPDATE_OK;
     }
 }

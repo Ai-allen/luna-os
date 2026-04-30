@@ -165,6 +165,7 @@ def main() -> int:
             "[INSTALLER] lsys write ok",
             "[INSTALLER] ldat write ok",
             "[INSTALLER] lrcv write ok",
+            "[INSTALLER] lrcv verify ok",
             "[INSTALLER] verify ok",
         ],
         [
@@ -178,6 +179,8 @@ def main() -> int:
             "[INSTALLER] lsys super fail",
             "[INSTALLER] ldat super fail",
             "[INSTALLER] lrcv write fail",
+            "[INSTALLER] verify lrcv read fail",
+            "[INSTALLER] verify lrcv contract fail",
             "[INSTALLER] verify gpt read fail",
             "[INSTALLER] verify lsys read fail",
             "[INSTALLER] verify ldat read fail",

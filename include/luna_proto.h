@@ -207,6 +207,16 @@ enum luna_data_status {
     LUNA_DATA_ERR_RECOVERY = 0xD108u,
 };
 
+enum luna_data_verify_flag {
+    LUNA_DATA_VERIFY_FLAG_DIRTY = 1u << 0,
+    LUNA_DATA_VERIFY_FLAG_LAYOUT_MISMATCH = 1u << 1,
+    LUNA_DATA_VERIFY_FLAG_CHECKSUM_MISMATCH = 1u << 2,
+    LUNA_DATA_VERIFY_FLAG_INVALID_RECORDS = 1u << 3,
+    LUNA_DATA_VERIFY_FLAG_TXN_LOG_IO = 1u << 4,
+    LUNA_DATA_VERIFY_FLAG_TXN_AUX_IO = 1u << 5,
+    LUNA_DATA_VERIFY_FLAG_SLOT_IO = 1u << 6,
+};
+
 enum luna_volume_state {
     LUNA_VOLUME_HEALTHY = 1,
     LUNA_VOLUME_DEGRADED = 2,
@@ -221,6 +231,30 @@ enum luna_system_mode {
     LUNA_MODE_RECOVERY = 3,
     LUNA_MODE_FATAL = 4,
     LUNA_MODE_INSTALL = 5,
+};
+
+enum luna_firmware_path {
+    LUNA_FIRMWARE_PATH_UNKNOWN = 0,
+    LUNA_FIRMWARE_PATH_UEFI = 1,
+    LUNA_FIRMWARE_PATH_BIOS = 2,
+};
+
+enum luna_firmware_flag {
+    LUNA_FIRMWARE_FLAG_STORAGE_HANDOFF = 1u << 0,
+    LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_READ = 1u << 1,
+    LUNA_FIRMWARE_FLAG_STORAGE_SOURCE_WRITE = 1u << 2,
+    LUNA_FIRMWARE_FLAG_STORAGE_TARGET_PRESENT = 1u << 3,
+    LUNA_FIRMWARE_FLAG_STORAGE_TARGET_READ = 1u << 4,
+    LUNA_FIRMWARE_FLAG_STORAGE_TARGET_WRITE = 1u << 5,
+    LUNA_FIRMWARE_FLAG_STORAGE_TARGET_SEPARATE = 1u << 6,
+    LUNA_FIRMWARE_FLAG_DISPLAY_HANDOFF = 1u << 7,
+    LUNA_FIRMWARE_FLAG_DISPLAY_FRAMEBUFFER = 1u << 8,
+};
+
+enum luna_firmware_display_status {
+    LUNA_FIRMWARE_DISPLAY_ABSENT = 0,
+    LUNA_FIRMWARE_DISPLAY_READY = 1,
+    LUNA_FIRMWARE_DISPLAY_INVALID = 2,
 };
 
 enum luna_native_profile {
@@ -1084,6 +1118,10 @@ struct luna_bootview {
     uint64_t installer_target_flags;
     uint64_t installer_target_system_lba;
     uint64_t installer_target_data_lba;
+    uint32_t firmware_path;
+    uint32_t firmware_flags;
+    uint64_t firmware_storage_status;
+    uint64_t firmware_display_status;
 };
 
 #define LUNA_BOOTVIEW_UEFI_DISK_HANDOFF_OFFSET 0x120ull

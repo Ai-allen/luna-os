@@ -15,18 +15,22 @@ include!("../../include/luna_installer_runtime_reset.rs");
 const GATE_REQUEST_CAP: u32 = 1;
 const GATE_VALIDATE_CAP: u32 = 6;
 const CAP_LIFE_WAKE: u64 = 0xC901;
+const CAP_LIFE_READ: u64 = 0xC902;
 const CAP_LIFE_SPAWN: u64 = 0xC903;
 const CAP_SYSTEM_REGISTER: u64 = 0xB101;
 const CAP_SYSTEM_QUERY: u64 = 0xB102;
 const CAP_SYSTEM_ALLOCATE: u64 = 0xB103;
 const CAP_SYSTEM_EVENT: u64 = 0xB104;
+const CAP_OBSERVE_LOG: u64 = 0xAA01;
 const CAP_DEVICE_WRITE: u64 = 0xA503;
 const CAP_DEVICE_READ: u64 = 0xA502;
 const LIFE_WAKE: u32 = 1;
+const LIFE_READ: u32 = 3;
 const LIFE_SPAWN: u32 = 4;
 const SYSTEM_REGISTER: u32 = 1;
 const SYSTEM_ALLOCATE: u32 = 3;
 const SYSTEM_EVENT: u32 = 4;
+const OBSERVE_LOG: u32 = 1;
 const DEVICE_WRITE: u32 = 3;
 const DEVICE_BLOCK_READ: u32 = 8;
 const DEVICE_BLOCK_WRITE: u32 = 9;
@@ -62,8 +66,9 @@ const STATUS_NOT_FOUND: u32 = 0xB101;
 const STATUS_NO_ROOM: u32 = 0xB102;
 
 const STATE_ACTIVE: u32 = 1;
+const STATE_DEGRADED: u32 = 3;
 const STATE_BOOTING: u32 = 4;
-const CAPACITY: usize = 16;
+const CAPACITY: usize = LUNA_FORMAL_SPACE_COUNT + 1;
 const EVENT_CAPACITY: usize = 32;
 
 const EVENT_BOOT_LIVE: u64 = 0x424F4F544C495645;
@@ -71,6 +76,8 @@ const EVENT_SECURITY_READY: u64 = 0x5345435245414459;
 const EVENT_LIFECYCLE_READY: u64 = 0x4C49464552454144;
 const EVENT_SYSTEM_READY: u64 = 0x5359535245414459;
 const EVENT_DEVICE_READY: u64 = 0x4445565245414459;
+const EVENT_DEVICE_DEGRADED: u64 = 0x4445564445475244;
+const EVENT_DEVICE_RECOVERY: u64 = 0x4445565243565259;
 const EVENT_DATA_READY: u64 = 0x4C4146534449534B;
 const EVENT_GRAPHICS_READY: u64 = 0x4756585245414459;
 const EVENT_NETWORK_READY: u64 = 0x4E45545245414459;
@@ -149,6 +156,15 @@ struct LunaSystemEventRecord {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
+struct LunaUnitRecord {
+    space_id: u32,
+    state: u32,
+    epoch: u64,
+    flags: u64,
+}
+
+#[repr(C)]
 struct LunaGate {
     sequence: u32,
     opcode: u32,
@@ -165,6 +181,8 @@ struct LunaGate {
     seal_low: u64,
     seal_high: u64,
     nonce: u64,
+    buffer_addr: u64,
+    buffer_size: u64,
 }
 
 #[repr(C)]
@@ -200,6 +218,23 @@ struct LunaDeviceGate {
 }
 
 #[repr(C)]
+struct LunaObserveGate {
+    sequence: u32,
+    opcode: u32,
+    status: u32,
+    space_id: u32,
+    level: u32,
+    result_count: u32,
+    cid_low: u64,
+    cid_high: u64,
+    start_time: u64,
+    end_time: u64,
+    buffer_addr: u64,
+    buffer_size: u64,
+    message: [u8; 32],
+}
+
+#[repr(C)]
 #[derive(Copy, Clone)]
 struct InstallerStoreSuperblock {
     magic: u32,
@@ -221,6 +256,13 @@ const EMPTY_RECORD: LunaSystemRecord = LunaSystemRecord {
     resource_time: 0,
     last_event: 0,
     name: [0; 16],
+};
+
+const EMPTY_UNIT_RECORD: LunaUnitRecord = LunaUnitRecord {
+    space_id: 0,
+    state: 0,
+    epoch: 0,
+    flags: 0,
 };
 
 static mut RECORDS: [LunaSystemRecord; CAPACITY] = [EMPTY_RECORD; CAPACITY];
@@ -275,6 +317,47 @@ fn serial_write(text: &[u8]) {
     }
 }
 
+fn serial_hex_digit(value: u8) {
+    let digit = if value < 10 { b'0' + value } else { b'A' + (value - 10) };
+    serial_putc(digit);
+}
+
+fn serial_hex32(value: u32) {
+    let mut shift = 28u32;
+    loop {
+        serial_hex_digit(((value >> shift) & 0xFu32) as u8);
+        if shift == 0 {
+            break;
+        }
+        shift -= 4;
+    }
+}
+
+fn serial_hex64(value: u64) {
+    serial_hex32((value >> 32) as u32);
+    serial_hex32(value as u32);
+}
+
+fn log_driver_gate_context(flags: u64) {
+    serial_write(b"[SYSTEM] driver flags=");
+    serial_hex64(flags);
+    serial_write(b" actions=");
+    serial_hex32(driver_recovery_action_flags(flags));
+    serial_write(b" storage-fatal=");
+    serial_write(if (flags & LUNA_DRIVER_LIFE_STORAGE_FATAL) != 0 { b"yes" } else { b"no" });
+    serial_write(b" recovery-required=");
+    serial_write(if (flags & LUNA_DRIVER_LIFE_RECOVERY_REQUIRED) != 0 { b"yes" } else { b"no" });
+    serial_write(b" storage-boot=");
+    serial_write(
+        if (driver_recovery_action_flags(flags) & LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT) != 0 {
+            b"yes"
+        } else {
+            b"no"
+        },
+    );
+    serial_write(b"\r\n");
+}
+
 fn device_write(text: &[u8], bootview: *const LunaBootView) -> bool {
     if bootview.is_null() {
         return false;
@@ -323,6 +406,8 @@ fn request_cap(domain_key: u64, caller_space: u64, out_low: &mut u64, out_high: 
     gate.seal_low = 0;
     gate.seal_high = 0;
     gate.nonce = 0;
+    gate.buffer_addr = 0;
+    gate.buffer_size = 0;
     let entry: extern "sysv64" fn(*mut LunaGate) =
         unsafe { core::mem::transmute(manifest.security_gate_entry as usize as *const ()) };
     entry(gate as *mut LunaGate);
@@ -434,6 +519,178 @@ fn validate_cap(domain_key: u64, cid_low: u64, cid_high: u64, target_gate: u32) 
         unsafe { core::mem::transmute(manifest.security_gate_entry as usize as *const ()) };
     entry(gate as *mut LunaGate);
     gate.status == 0
+}
+
+fn security_govern(query: &mut LunaGovernanceQuery) -> bool {
+    let manifest = unsafe { &*(LUNA_MANIFEST_ADDR as *const LunaManifest) };
+    let gate = unsafe { &mut *(manifest.security_gate_base as *mut LunaGate) };
+    unsafe {
+        write_bytes(gate as *mut LunaGate as *mut u8, 0, size_of::<LunaGate>());
+    }
+    gate.sequence = 3;
+    gate.opcode = LUNA_GATE_GOVERN;
+    gate.caller_space = SPACE_SYSTEM as u64;
+    gate.buffer_addr = (query as *mut LunaGovernanceQuery) as u64;
+    gate.buffer_size = size_of::<LunaGovernanceQuery>() as u64;
+    let entry: extern "sysv64" fn(*mut LunaGate) =
+        unsafe { core::mem::transmute(manifest.security_gate_entry as usize as *const ()) };
+    entry(gate as *mut LunaGate);
+    gate.status == 0
+}
+
+fn observe_log(cid_low: u64, cid_high: u64, message: &[u8]) -> bool {
+    if cid_low == 0 || cid_high == 0 {
+        return false;
+    }
+    let manifest = unsafe { &*(LUNA_MANIFEST_ADDR as *const LunaManifest) };
+    let gate = unsafe { &mut *(manifest.observe_gate_base as *mut LunaObserveGate) };
+    unsafe {
+        write_bytes(gate as *mut LunaObserveGate as *mut u8, 0, size_of::<LunaObserveGate>());
+    }
+    gate.sequence = 1;
+    gate.opcode = OBSERVE_LOG;
+    gate.space_id = SPACE_SYSTEM;
+    gate.level = 1;
+    gate.cid_low = cid_low;
+    gate.cid_high = cid_high;
+    let mut index = 0usize;
+    while index < gate.message.len() && index < message.len() {
+        gate.message[index] = message[index];
+        index += 1;
+    }
+    let entry: extern "sysv64" fn(*mut LunaObserveGate) =
+        unsafe { core::mem::transmute(manifest.observe_gate_entry as usize as *const ()) };
+    entry(gate as *mut LunaObserveGate);
+    gate.status == 0
+}
+
+fn driver_recovery_action_flags(flags: u64) -> u32 {
+    (flags >> LUNA_DRIVER_ACTION_LIFECYCLE_SHIFT) as u32
+}
+
+fn storage_recovery_actions(actions: u32) -> u32 {
+    actions
+        & (LUNA_DRIVER_ACTION_STORAGE_FALLBACK_FAMILY
+            | LUNA_DRIVER_ACTION_STORAGE_READONLY
+            | LUNA_DRIVER_ACTION_STORAGE_RESCAN
+            | LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT
+            | LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE)
+}
+
+fn storage_floor_actions(actions: u32) -> u32 {
+    actions
+        & (LUNA_DRIVER_ACTION_STORAGE_READONLY
+            | LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT
+            | LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE)
+}
+
+fn input_recovery_actions(actions: u32) -> u32 {
+    actions & (LUNA_DRIVER_ACTION_INPUT_MINIMAL | LUNA_DRIVER_ACTION_INPUT_OPERATOR_RECOVERY)
+}
+
+fn display_recovery_actions(actions: u32) -> u32 {
+    actions
+        & (LUNA_DRIVER_ACTION_DISPLAY_CONSOLE_FALLBACK
+            | LUNA_DRIVER_ACTION_DISPLAY_FRAMEBUFFER_DISABLED)
+}
+
+fn network_recovery_actions(actions: u32) -> u32 {
+    actions & (LUNA_DRIVER_ACTION_NETWORK_OFFLINE | LUNA_DRIVER_ACTION_NETWORK_SOFT_LOOP)
+}
+
+fn storage_recovery_state(bootview: &LunaBootView, actions: u32) -> u32 {
+    let mut state = bootview.volume_state;
+    if state == 0 {
+        state = LUNA_VOLUME_HEALTHY;
+    }
+    if (actions & LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT) != 0 {
+        if state < LUNA_VOLUME_RECOVERY_REQUIRED {
+            state = LUNA_VOLUME_RECOVERY_REQUIRED;
+        }
+        return state;
+    }
+    if storage_floor_actions(actions) != 0 && state == LUNA_VOLUME_HEALTHY {
+        return LUNA_VOLUME_DEGRADED;
+    }
+    state
+}
+
+fn apply_storage_governed_state(bootview: *const LunaBootView, target_state: u32) -> bool {
+    if bootview.is_null() {
+        return true;
+    }
+    let view = unsafe { &mut *(bootview as *mut LunaBootView) };
+    let mut query = LunaGovernanceQuery {
+        action: LUNA_GOVERN_MOUNT,
+        result_state: target_state,
+        writer_space: 0,
+        authority_space: 0,
+        mode: view.system_mode,
+        object_type: 0,
+        object_flags: 0,
+        reserved0: 0,
+        domain_key: 0,
+        cid_low: 0,
+        cid_high: 0,
+        object_low: 0,
+        object_high: 0,
+        install_low: view.install_uuid_low,
+        install_high: view.install_uuid_high,
+    };
+    let allowed = security_govern(&mut query);
+    view.volume_state = query.result_state;
+    view.system_mode = query.mode;
+    allowed && !matches!(
+        query.result_state,
+        LUNA_VOLUME_FATAL_INCOMPATIBLE | LUNA_VOLUME_FATAL_UNRECOVERABLE
+    )
+}
+
+fn apply_storage_recovery_floor(bootview: *const LunaBootView, actions: u32) -> bool {
+    if bootview.is_null() {
+        return true;
+    }
+    let storage_actions = storage_floor_actions(actions);
+    if storage_actions == 0 {
+        return true;
+    }
+    let view = unsafe { &*(bootview as *const LunaBootView) };
+    apply_storage_governed_state(bootview, storage_recovery_state(view, storage_actions))
+}
+
+fn observe_driver_recovery(cid_low: u64, cid_high: u64, actions: u32) {
+    if storage_recovery_actions(actions) != 0 {
+        if (actions & LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT) != 0 {
+            let _ = observe_log(cid_low, cid_high, b"drvrec storage=recovery");
+        } else if (actions
+            & (LUNA_DRIVER_ACTION_STORAGE_READONLY
+                | LUNA_DRIVER_ACTION_STORAGE_DISABLE_UNSAFE_WRITE))
+            != 0
+        {
+            let _ = observe_log(cid_low, cid_high, b"drvrec storage=readonly");
+        } else {
+            let _ = observe_log(cid_low, cid_high, b"drvrec storage=fallback");
+        }
+    }
+    if input_recovery_actions(actions) != 0 {
+        let _ = observe_log(cid_low, cid_high, b"drvrec input=minimal");
+    }
+    if display_recovery_actions(actions) != 0 {
+        if (actions & LUNA_DRIVER_ACTION_DISPLAY_FRAMEBUFFER_DISABLED) != 0 {
+            let _ = observe_log(cid_low, cid_high, b"drvrec display=text");
+        } else {
+            let _ = observe_log(cid_low, cid_high, b"drvrec display=console");
+        }
+    }
+    if network_recovery_actions(actions) != 0 {
+        let _ = observe_log(cid_low, cid_high, b"drvrec network=offline");
+    }
+}
+
+fn installer_storage_failure(bootview: &LunaBootView, message: &[u8]) -> bool {
+    log_write(message, bootview);
+    let _ = apply_storage_governed_state(bootview as *const LunaBootView, LUNA_VOLUME_RECOVERY_REQUIRED);
+    false
 }
 
 fn device_block_io(
@@ -1007,6 +1264,17 @@ fn build_installer_esp_sector(
     }
 }
 
+fn sector_is_zero(sector: &[u8; DISK_SECTOR_SIZE]) -> bool {
+    let mut index = 0usize;
+    while index < DISK_SECTOR_SIZE {
+        if sector[index] != 0 {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 fn run_installer_apply(bootview: &LunaBootView) -> bool {
     if bootview.system_mode != LUNA_MODE_INSTALL {
         return true;
@@ -1206,8 +1474,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         bootview.installer_target_system_lba as u32,
         sector.as_mut_ptr(),
     ) {
-        log_write(b"[INSTALLER] lsys super fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] lsys super fail\r\n");
     }
     sector = [0u8; DISK_SECTOR_SIZE];
     let mut meta_index = 1u64;
@@ -1221,8 +1488,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
             (bootview.installer_target_system_lba + meta_index) as u32,
             sector.as_mut_ptr(),
         ) {
-            log_write(b"[INSTALLER] lsys meta fail\r\n", bootview);
-            return false;
+            return installer_storage_failure(bootview, b"[INSTALLER] lsys meta fail\r\n");
         }
         meta_index += 1;
     }
@@ -1245,8 +1511,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         bootview.installer_target_data_lba as u32,
         sector.as_mut_ptr(),
     ) {
-        log_write(b"[INSTALLER] ldat super fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] ldat super fail\r\n");
     }
     sector = [0u8; DISK_SECTOR_SIZE];
     meta_index = 1;
@@ -1260,8 +1525,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
             (bootview.installer_target_data_lba + meta_index) as u32,
             sector.as_mut_ptr(),
         ) {
-            log_write(b"[INSTALLER] ldat meta fail\r\n", bootview);
-            return false;
+            return installer_storage_failure(bootview, b"[INSTALLER] ldat meta fail\r\n");
         }
         meta_index += 1;
     }
@@ -1277,10 +1541,24 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         RECOVERY_START_LBA as u32,
         sector.as_mut_ptr(),
     ) {
-        log_write(b"[INSTALLER] lrcv write fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] lrcv write fail\r\n");
     }
     log_write(b"[INSTALLER] lrcv write ok\r\n", bootview);
+    if !device_block_io(
+        bootview,
+        DEVICE_BLOCK_READ,
+        LUNA_DEVICE_ID_DISK1,
+        read_low,
+        read_high,
+        RECOVERY_START_LBA as u32,
+        sector.as_mut_ptr(),
+    ) {
+        return installer_storage_failure(bootview, b"[INSTALLER] verify lrcv read fail\r\n");
+    }
+    if !sector_is_zero(&sector) {
+        return installer_storage_failure(bootview, b"[INSTALLER] verify lrcv contract fail\r\n");
+    }
+    log_write(b"[INSTALLER] lrcv verify ok\r\n", bootview);
 
     if !device_block_io(bootview, DEVICE_BLOCK_READ, LUNA_DEVICE_ID_DISK1, read_low, read_high, 1, sector.as_mut_ptr()) {
         log_write(b"[INSTALLER] verify gpt read fail\r\n", bootview);
@@ -1299,8 +1577,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         bootview.installer_target_system_lba as u32,
         sector.as_mut_ptr(),
     ) {
-        log_write(b"[INSTALLER] verify lsys read fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] verify lsys read fail\r\n");
     }
     let system_super = unsafe { &*(sector.as_ptr() as *const LunaStoreSuperblock) };
     if system_super.magic != STORE_MAGIC
@@ -1310,8 +1587,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         || system_super.reserved[8] != bootview.install_uuid_high
         || system_super.reserved[9] != LUNA_ACTIVATION_ACTIVE as u64
         || system_super.reserved[10] != bootview.installer_target_data_lba {
-        log_write(b"[INSTALLER] verify lsys contract fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] verify lsys contract fail\r\n");
     }
     if !device_block_io(
         bootview,
@@ -1322,8 +1598,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         bootview.installer_target_data_lba as u32,
         sector.as_mut_ptr(),
     ) {
-        log_write(b"[INSTALLER] verify ldat read fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] verify ldat read fail\r\n");
     }
     let data_super = unsafe { &*(sector.as_ptr() as *const LunaStoreSuperblock) };
     if data_super.magic != STORE_MAGIC
@@ -1332,8 +1607,7 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
         || data_super.reserved[7] != bootview.install_uuid_low
         || data_super.reserved[8] != bootview.install_uuid_high
         || data_super.reserved[10] != bootview.installer_target_system_lba {
-        log_write(b"[INSTALLER] verify ldat contract fail\r\n", bootview);
-        return false;
+        return installer_storage_failure(bootview, b"[INSTALLER] verify ldat contract fail\r\n");
     }
     log_write(b"[INSTALLER] verify ok\r\n", bootview);
     true
@@ -1352,6 +1626,79 @@ fn lifecycle_call(gate: &mut LunaLifecycleGate) -> u32 {
         };
     entry(gate as *mut LunaLifecycleGate);
     gate.status
+}
+
+fn lifecycle_read_units(
+    life_gate: &mut LunaLifecycleGate,
+    cid_low: u64,
+    cid_high: u64,
+    out: &mut [LunaUnitRecord; CAPACITY],
+) -> u32 {
+    life_gate.sequence = 250;
+    life_gate.opcode = LIFE_READ;
+    life_gate.status = 0;
+    life_gate.space_id = 0;
+    life_gate.state = 0;
+    life_gate.result_count = 0;
+    life_gate.cid_low = cid_low;
+    life_gate.cid_high = cid_high;
+    life_gate.epoch = 0;
+    life_gate.flags = 0;
+    life_gate.buffer_addr = out.as_mut_ptr() as u64;
+    life_gate.buffer_size = core::mem::size_of::<[LunaUnitRecord; CAPACITY]>() as u64;
+    life_gate.entry_addr = 0;
+    if lifecycle_call(life_gate) != STATUS_OK {
+        return 0;
+    }
+    life_gate.result_count
+}
+
+fn device_driver_lifecycle_flags(
+    life_gate: &mut LunaLifecycleGate,
+    cid_low: u64,
+    cid_high: u64,
+) -> Option<u64> {
+    let mut units = [EMPTY_UNIT_RECORD; CAPACITY];
+    let count = lifecycle_read_units(life_gate, cid_low, cid_high, &mut units);
+    let mut index = 0usize;
+    while index < count as usize && index < units.len() {
+        let unit = units[index];
+        if unit.space_id == SPACE_DEVICE && unit.state == UNIT_LIVE {
+            return Some(unit.flags);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn driver_actionable_flags(flags: u64) -> u64 {
+    flags
+        & (LUNA_DRIVER_LIFE_STORAGE_FATAL
+            | LUNA_DRIVER_LIFE_DISPLAY_DEGRADED
+            | LUNA_DRIVER_LIFE_INPUT_DEGRADED
+            | LUNA_DRIVER_LIFE_NETWORK_DEGRADED
+            | LUNA_DRIVER_LIFE_STORAGE_FIRMWARE_ONLY
+            | LUNA_DRIVER_LIFE_STORAGE_LEGACY_FALLBACK
+            | LUNA_DRIVER_LIFE_DISPLAY_TEXT_ONLY
+            | LUNA_DRIVER_LIFE_DISPLAY_FIRMWARE_ONLY
+            | LUNA_DRIVER_LIFE_INPUT_LEGACY_ONLY
+            | LUNA_DRIVER_LIFE_NETWORK_LOOP_ONLY
+            | LUNA_DRIVER_LIFE_RECOVERY_REQUIRED
+            | LUNA_DRIVER_LIFE_RUNTIME_REBIND
+            | LUNA_DRIVER_LIFE_LEGACY_RECOVERY)
+}
+
+fn driver_requires_recovery(flags: u64) -> bool {
+    (flags & (LUNA_DRIVER_LIFE_STORAGE_FATAL | LUNA_DRIVER_LIFE_RECOVERY_REQUIRED)) != 0
+        || (driver_recovery_action_flags(flags) & LUNA_DRIVER_ACTION_STORAGE_RECOVERY_BOOT) != 0
+}
+
+fn driver_system_event(flags: u64) -> u64 {
+    if driver_requires_recovery(flags) {
+        EVENT_DEVICE_RECOVERY
+    } else {
+        EVENT_DEVICE_DEGRADED
+    }
 }
 
 fn register_base(gate: &mut LunaSystemGate, cid_low: u64, cid_high: u64, space_id: u32, name: &[u8]) {
@@ -1456,7 +1803,6 @@ fn spawn_space(life_gate: &mut LunaLifecycleGate, cid_low: u64, cid_high: u64, s
     life_gate.cid_low = cid_low;
     life_gate.cid_high = cid_high;
     life_gate.epoch = 0;
-    life_gate.flags = 0;
     life_gate.buffer_addr = bootview_addr;
     life_gate.buffer_size = core::mem::size_of::<LunaBootView>() as u64;
     life_gate.entry_addr = entry_addr;
@@ -1724,6 +2070,8 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     };
     let mut life_wake_low = 0u64;
     let mut life_wake_high = 0u64;
+    let mut life_read_low = 0u64;
+    let mut life_read_high = 0u64;
     let mut life_spawn_low = 0u64;
     let mut life_spawn_high = 0u64;
     let mut sys_reg_low = 0u64;
@@ -1732,6 +2080,11 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     let mut sys_alloc_high = 0u64;
     let mut sys_event_low = 0u64;
     let mut sys_event_high = 0u64;
+    let mut observe_log_low = 0u64;
+    let mut observe_log_high = 0u64;
+    let mut driver_lifecycle_flags = 0u64;
+    let mut driver_recovery_actions = 0u32;
+    let mut driver_recovery_required = false;
 
     unsafe {
         write_bytes(core::ptr::addr_of_mut!(RECORDS) as *mut u8, 0, core::mem::size_of::<[LunaSystemRecord; CAPACITY]>());
@@ -1743,6 +2096,7 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     serial_write(b"[SYSTEM] atlas online\r\n");
 
     let _ = request_cap(CAP_LIFE_WAKE, SPACE_SYSTEM as u64, &mut life_wake_low, &mut life_wake_high);
+    let _ = request_cap(CAP_LIFE_READ, SPACE_SYSTEM as u64, &mut life_read_low, &mut life_read_high);
     let _ = request_cap(CAP_LIFE_SPAWN, SPACE_SYSTEM as u64, &mut life_spawn_low, &mut life_spawn_high);
     let _ = request_cap(CAP_SYSTEM_REGISTER, SPACE_SYSTEM as u64, &mut sys_reg_low, &mut sys_reg_high);
     let _ = request_cap(CAP_SYSTEM_ALLOCATE, SPACE_SYSTEM as u64, &mut sys_alloc_low, &mut sys_alloc_high);
@@ -1786,6 +2140,27 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     system_entry_gate(gate as *mut LunaSystemGate);
 
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_DEVICE, manifest.device_boot_entry, b"DEVICE", b"[SYSTEM] Spawning DEVICE space...\r\n", b"[SYSTEM] Space 5 ready.\r\n");
+    if let Some(flags) = device_driver_lifecycle_flags(life_gate, life_read_low, life_read_high) {
+        driver_lifecycle_flags = flags;
+        driver_recovery_actions = driver_recovery_action_flags(flags);
+        log_driver_gate_context(flags);
+        let actionable = driver_actionable_flags(flags);
+        if actionable != 0 {
+            let _ = unsafe {
+                stage_record(
+                    SPACE_DEVICE,
+                    encode_name16(b"DEVICE"),
+                    STATE_DEGRADED,
+                    driver_system_event(flags),
+                )
+            };
+        }
+        driver_recovery_required = driver_requires_recovery(flags);
+    }
+    if !apply_storage_recovery_floor(bootview, driver_recovery_actions) {
+        log_write(b"[SYSTEM] storage floor=fatal\r\n", bootview);
+        return;
+    }
     if !bootview.is_null() {
         let view = unsafe { &*bootview };
         if view.system_mode == LUNA_MODE_INSTALL && !run_installer_apply(view) {
@@ -1796,6 +2171,16 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_DATA, manifest.data_boot_entry, b"DATA", b"[SYSTEM] Spawning DATA space...\r\n", b"[SYSTEM] Space 2 ready.\r\n");
 
     let storage_state = unsafe { (*bootview).volume_state };
+    if storage_state != LUNA_VOLUME_HEALTHY {
+        let _ = unsafe {
+            stage_record(
+                SPACE_DATA,
+                encode_name16(b"DATA"),
+                STATE_DEGRADED,
+                driver_system_event(driver_lifecycle_flags),
+            )
+        };
+    }
     if storage_state == LUNA_VOLUME_FATAL_INCOMPATIBLE || storage_state == LUNA_VOLUME_FATAL_UNRECOVERABLE {
         log_write(b"[SYSTEM] storage gate=fatal\r\n", bootview);
         return;
@@ -1812,18 +2197,63 @@ pub extern "sysv64" fn system_entry_boot(_bootview: *const u8) {
     system_entry_gate(gate as *mut LunaSystemGate);
 
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_GRAPHICS, manifest.graphics_boot_entry, b"GRAPHICS", b"[SYSTEM] Spawning GRAPHICS space...\r\n", b"[SYSTEM] Space 4 ready.\r\n");
+    if display_recovery_actions(driver_recovery_actions) != 0 {
+        let _ = unsafe {
+            stage_record(
+                SPACE_GRAPHICS,
+                encode_name16(b"GRAPHICS"),
+                STATE_DEGRADED,
+                driver_system_event(driver_lifecycle_flags),
+            )
+        };
+    }
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_NETWORK, manifest.network_boot_entry, b"NETWORK", b"[SYSTEM] Spawning NETWORK space...\r\n", b"[SYSTEM] Space 6 ready.\r\n");
+    if network_recovery_actions(driver_recovery_actions) != 0 {
+        let _ = unsafe {
+            stage_record(
+                SPACE_NETWORK,
+                encode_name16(b"NETWORK"),
+                STATE_DEGRADED,
+                driver_system_event(driver_lifecycle_flags),
+            )
+        };
+    }
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_TIME, manifest.time_boot_entry, b"TIME", b"[SYSTEM] Spawning TIME space...\r\n", b"[SYSTEM] Space 8 ready.\r\n");
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_OBSERVABILITY, manifest.observe_boot_entry, b"OBSERVE", b"[SYSTEM] Spawning OBSERVE space...\r\n", b"[SYSTEM] Space 10 ready.\r\n");
+    if driver_recovery_actions != 0
+        && request_cap_with_uses(
+            CAP_OBSERVE_LOG,
+            SPACE_SYSTEM as u64,
+            8,
+            &mut observe_log_low,
+            &mut observe_log_high,
+        )
+    {
+        observe_driver_recovery(observe_log_low, observe_log_high, driver_recovery_actions);
+    }
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_PROGRAM, manifest.program_boot_entry, b"PROGRAM", b"[SYSTEM] Spawning PROGRAM space...\r\n", b"[SYSTEM] Space 12 ready.\r\n");
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_AI, manifest.ai_boot_entry, b"AI", b"[SYSTEM] Spawning AI space...\r\n", b"[SYSTEM] Space 11 ready.\r\n");
     if storage_state == LUNA_VOLUME_RECOVERY_REQUIRED {
         log_write(b"[SYSTEM] storage gate=recovery\r\n", bootview);
         return;
     }
+    if driver_recovery_required {
+        log_write(b"[SYSTEM] driver gate=recovery\r\n", bootview);
+        return;
+    }
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_PACKAGE, manifest.package_boot_entry, b"PACKAGE", b"[SYSTEM] Spawning PACKAGE space...\r\n", b"[SYSTEM] Space 13 ready.\r\n");
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_UPDATE, manifest.update_boot_entry, b"UPDATE", b"[SYSTEM] Spawning UPDATE space...\r\n", b"[SYSTEM] Space 14 ready.\r\n");
     spawn_and_register(manifest, bootview, gate, life_gate, sys_reg_low, sys_reg_high, life_spawn_low, life_spawn_high, SPACE_USER, manifest.user_boot_entry, b"USER", b"[SYSTEM] Spawning USER space...\r\n", b"");
+    if input_recovery_actions(driver_recovery_actions) != 0 {
+        let _ = unsafe {
+            stage_record(
+                SPACE_USER,
+                encode_name16(b"USER"),
+                STATE_DEGRADED,
+                driver_system_event(driver_lifecycle_flags),
+            )
+        };
+    }
 }
 
 #[unsafe(no_mangle)]
