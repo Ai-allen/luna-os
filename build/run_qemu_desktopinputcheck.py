@@ -88,6 +88,62 @@ def wait_for_match(
     raise RuntimeError(f"desktopinputcheck missing expected match: {pattern}")
 
 
+def wait_for_ordered_patterns(
+    log_path: Path,
+    patterns: list[str],
+    timeout_seconds: float,
+    description: str,
+    forbidden: list[str] | None = None,
+) -> str:
+    deadline = time.time() + timeout_seconds
+    forbidden = forbidden or []
+    while True:
+        text = read_log(log_path)
+        for needle in forbidden:
+            if needle in text:
+                raise RuntimeError(f"desktopinputcheck observed failure output: {needle}")
+        offset = 0
+        matched = True
+        for pattern in patterns:
+            match = re.search(pattern, text[offset:])
+            if match is None:
+                matched = False
+                break
+            offset += match.end()
+        if matched:
+            return text
+        if time.time() >= deadline:
+            break
+        time.sleep(0.01)
+    text = read_log(log_path)
+    for needle in forbidden:
+        if needle in text:
+            raise RuntimeError(f"desktopinputcheck observed failure output: {needle}")
+    raise RuntimeError(f"desktopinputcheck missing ordered real keyboard path: {description}")
+
+
+def wait_for_keyboard_command_path(
+    log_path: Path,
+    first_key_hex: str,
+    command: str,
+    timeout_seconds: float,
+    forbidden: list[str],
+) -> str:
+    escaped_command = re.escape(command)
+    return wait_for_ordered_patterns(
+        log_path,
+        [
+            rf"\[DEVICE\] input event src={REAL_KEYBOARD_SOURCE_PATTERN} key={first_key_hex}",
+            rf"\[USER\] input lane src=keyboard key={first_key_hex}",
+            rf"\[USER\] shell accept src=keyboard cmd={escaped_command}",
+            rf"\[USER\] shell execute src=keyboard cmd={escaped_command}",
+        ],
+        timeout_seconds,
+        f"key={first_key_hex} command={command}",
+        forbidden=forbidden,
+    )
+
+
 def send_key_qmp(qmp: QmpSession, qcode: str) -> None:
     qmp.execute("human-monitor-command", {"command-line": f"sendkey {qcode}"})
     time.sleep(0.16)
@@ -175,6 +231,7 @@ def run_setup_boot(qemu: str, ovmf_code: str, forbidden: list[str], stderr_file)
                 "[USER] shell ready",
                 "[USER] input lane ready",
                 "first-setup required: no hostname or user configured",
+                "guest@luna:~$",
             ],
             45.0,
             forbidden=forbidden,
@@ -185,6 +242,13 @@ def run_setup_boot(qemu: str, ovmf_code: str, forbidden: list[str], stderr_file)
             raise RuntimeError("desktopinputcheck setup boot started with pre-seeded commands")
 
         send_keys_qmp(qmp, "setup.init h dev p\r")
+        wait_for_keyboard_command_path(
+            SETUP_LOG_PATH,
+            "73",
+            "setup.init h dev p",
+            20.0,
+            forbidden,
+        )
         wait_for_log(
             SETUP_LOG_PATH,
             [
@@ -219,6 +283,7 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
                 "[USER] input lane ready",
                 "login required: session is locked",
                 "login <username> <password>",
+                "guest@h:~$",
             ],
             45.0,
             forbidden=forbidden,
@@ -229,6 +294,13 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
             raise RuntimeError("desktopinputcheck input boot started with pre-seeded commands")
 
         send_keys_qmp(qmp, "login dev p\r")
+        wait_for_keyboard_command_path(
+            RUN_LOG_PATH,
+            "6C",
+            "login dev p",
+            20.0,
+            forbidden,
+        )
         wait_for_log(
             RUN_LOG_PATH,
             [
@@ -301,8 +373,12 @@ def main() -> int:
     validate_no_script_or_operator(combined, stderr, forbidden_common)
 
     required = [
+        "[USER] input lane src=keyboard key=73",
+        "[USER] shell accept src=keyboard cmd=setup.init h dev p",
         "[USER] shell execute src=keyboard cmd=setup.init h dev p",
         "setup.init ok: host and first user created",
+        "[USER] input lane src=keyboard key=6C",
+        "[USER] shell accept src=keyboard cmd=login dev p",
         "[USER] shell execute src=keyboard cmd=login dev p",
         "login ok: session active",
         "[USER] desktop session online",
@@ -313,6 +389,20 @@ def main() -> int:
     for needle in required:
         if needle not in combined:
             raise RuntimeError(f"desktopinputcheck missing expected output: {needle}")
+    wait_for_keyboard_command_path(
+        SETUP_LOG_PATH,
+        "73",
+        "setup.init h dev p",
+        0.0,
+        forbidden_common,
+    )
+    wait_for_keyboard_command_path(
+        RUN_LOG_PATH,
+        "6C",
+        "login dev p",
+        0.0,
+        forbidden_common,
+    )
     if re.search(rf"\[DEVICE\] input event src={REAL_KEYBOARD_SOURCE_PATTERN} key=66", combined) is None:
         raise RuntimeError("desktopinputcheck missing real keyboard event for desktop key f")
     if re.search(r"\[(?:VIRTKBD|PS2)\].*code=(?:0021|21)", combined) is None:

@@ -93,6 +93,18 @@ static void debug_input_byte(const char *prefix, uint32_t value) {
     serial_write_debug("\r\n");
 }
 
+static void debug_input_text(const char *prefix, const char *text, size_t len) {
+    serial_write_debug(prefix);
+    for (size_t i = 0u; i < len; ++i) {
+        char ch = text[i];
+        if (ch == '\0') {
+            break;
+        }
+        serial_putc(ch);
+    }
+    serial_write_debug("\r\n");
+}
+
 static struct luna_cid g_shell_cid = {0, 0};
 static struct luna_cid g_life_read_cid = {0, 0};
 static struct luna_cid g_program_load_cid = {0, 0};
@@ -128,6 +140,9 @@ static uint32_t g_pointer_armed = 0u;
 static uint32_t g_pointer_active = 0u;
 static uint32_t g_desktop_mode = 0u;
 static uint32_t g_desktop_booted = 0u;
+static uint32_t g_user_input_debug_budget = 64u;
+static uint32_t g_user_command_debug_budget = 32u;
+static uint32_t g_session_script_debug_budget = 64u;
 static uint64_t device_read_block(uint32_t device_id, void *out, uint64_t size);
 static struct luna_desktop_shell_state g_desktop_shell = {
     .version = 1u,
@@ -176,6 +191,8 @@ static struct {
     struct luna_query_row rows[LUNA_OBSERVE_LOG_CAPACITY];
 } g_lasql_observe_payload;
 static struct luna_cid g_system_query_cid = {0, 0};
+static uint64_t g_device_lifecycle_flags = 0u;
+static uint32_t g_input_recovery_actions = 0u;
 static char g_hostname[32] = "luna";
 static char g_username[16] = "guest";
 static uint32_t g_user_setup_required = 1u;
@@ -249,6 +266,8 @@ static const char g_msg_desktop_ready[] = "[USER] desktop session online\r\n";
 static const char g_msg_desktop_prefix[] = "[DESKTOP] ";
 static const char g_msg_ok_suffix[] = " ok\r\n";
 static const char g_msg_fail_suffix[] = " fail\r\n";
+static const char g_msg_input_recovery_minimal[] = "[USER] input recovery=keyboard-minimal\r\n";
+static const char g_msg_input_recovery_shell[] = "[USER] input recovery=operator-shell\r\n";
 static const char g_msg_status_launcher[] = "status launcher=";
 static const char g_msg_status_control[] = " control=";
 static const char g_msg_status_theme[] = " theme=";
@@ -3023,6 +3042,230 @@ static uint64_t device_input_read_pointer(struct luna_pointer_event *out) {
         (struct luna_device_gate *)(uintptr_t)manifest->device_gate_base
     );
     return gate->size;
+}
+
+enum {
+    USER_INPUT_SOURCE_NONE = 0u,
+    USER_INPUT_SOURCE_KEYBOARD = 1u,
+    USER_INPUT_SOURCE_OPERATOR = 2u,
+};
+
+static const char *user_input_source_name(uint32_t source) {
+    switch (source) {
+        case USER_INPUT_SOURCE_KEYBOARD:
+            return "keyboard";
+        case USER_INPUT_SOURCE_OPERATOR:
+            return "operator";
+        default:
+            return "none";
+    }
+}
+
+static void log_user_input_event(uint32_t source, uint8_t value) {
+    const char *prefix = "[USER] input lane src=none key=";
+    if (g_user_input_debug_budget == 0u) {
+        return;
+    }
+    if (source == USER_INPUT_SOURCE_KEYBOARD) {
+        prefix = "[USER] input lane src=keyboard key=";
+    } else if (source == USER_INPUT_SOURCE_OPERATOR) {
+        prefix = "[USER] input lane src=operator key=";
+    }
+    debug_input_byte(prefix, value);
+    g_user_input_debug_budget -= 1u;
+}
+
+static void log_shell_command(const char *stage, uint32_t source, const char *line, size_t len) {
+    char prefix[64];
+    size_t prefix_len = 0u;
+    const char *source_name = user_input_source_name(source);
+
+    if (g_user_command_debug_budget == 0u) {
+        return;
+    }
+    zero_bytes(prefix, sizeof(prefix));
+    for (const char *p = "[USER] shell "; *p != '\0' && prefix_len + 1u < sizeof(prefix); ++p) {
+        prefix[prefix_len++] = *p;
+    }
+    for (const char *p = stage; *p != '\0' && prefix_len + 1u < sizeof(prefix); ++p) {
+        prefix[prefix_len++] = *p;
+    }
+    for (const char *p = " src="; *p != '\0' && prefix_len + 1u < sizeof(prefix); ++p) {
+        prefix[prefix_len++] = *p;
+    }
+    for (const char *p = source_name; *p != '\0' && prefix_len + 1u < sizeof(prefix); ++p) {
+        prefix[prefix_len++] = *p;
+    }
+    for (const char *p = " cmd="; *p != '\0' && prefix_len + 1u < sizeof(prefix); ++p) {
+        prefix[prefix_len++] = *p;
+    }
+    prefix[prefix_len] = '\0';
+    debug_input_text(prefix, line, len);
+    g_user_command_debug_budget -= 1u;
+}
+
+static void log_session_script_command(const char *line, size_t len) {
+    if (g_session_script_debug_budget == 0u) {
+        return;
+    }
+    debug_input_text("[USER] session script cmd=", line, len);
+    g_session_script_debug_budget -= 1u;
+}
+
+static uint32_t lifecycle_read_units(struct luna_unit_record *out, uint32_t capacity) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_lifecycle_gate *gate =
+        (volatile struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base;
+
+    if (out == 0 || capacity == 0u || g_life_read_cid.low == 0u || g_life_read_cid.high == 0u) {
+        return 0u;
+    }
+
+    zero_bytes(out, sizeof(struct luna_unit_record) * capacity);
+    zero_bytes((void *)(uintptr_t)manifest->lifecycle_gate_base, sizeof(struct luna_lifecycle_gate));
+    gate->sequence = 57u;
+    gate->opcode = LUNA_LIFE_READ_UNITS;
+    gate->cid_low = g_life_read_cid.low;
+    gate->cid_high = g_life_read_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)out;
+    gate->buffer_size = sizeof(struct luna_unit_record) * capacity;
+    ((lifecycle_gate_fn_t)(uintptr_t)manifest->lifecycle_gate_entry)(
+        (struct luna_lifecycle_gate *)(uintptr_t)manifest->lifecycle_gate_base
+    );
+    if (gate->status != LUNA_LIFE_OK) {
+        return 0u;
+    }
+    return gate->result_count;
+}
+
+static uint64_t device_driver_lifecycle_flags(void) {
+    struct luna_unit_record records[16];
+    uint32_t count = lifecycle_read_units(records, 16u);
+
+    for (uint32_t i = 0u; i < count && i < 16u; ++i) {
+        if (records[i].space_id == LUNA_SPACE_DEVICE && records[i].state == LUNA_UNIT_LIVE) {
+            return records[i].flags;
+        }
+    }
+    return 0u;
+}
+
+static uint32_t system_query_space_state(uint32_t space_id) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_system_gate *gate =
+        (volatile struct luna_system_gate *)(uintptr_t)manifest->system_gate_base;
+    struct luna_system_record record;
+
+    if (g_system_query_cid.low == 0u || g_system_query_cid.high == 0u) {
+        return 0u;
+    }
+
+    zero_bytes(&record, sizeof(record));
+    zero_bytes((void *)(uintptr_t)manifest->system_gate_base, sizeof(struct luna_system_gate));
+    gate->sequence = 69u + space_id;
+    gate->opcode = LUNA_SYSTEM_QUERY_SPACE;
+    gate->space_id = space_id;
+    gate->cid_low = g_system_query_cid.low;
+    gate->cid_high = g_system_query_cid.high;
+    gate->buffer_addr = (uint64_t)(uintptr_t)&record;
+    gate->buffer_size = sizeof(record);
+    ((system_gate_fn_t)(uintptr_t)manifest->system_gate_entry)(
+        (struct luna_system_gate *)(uintptr_t)manifest->system_gate_base
+    );
+    if (gate->status != LUNA_SYSTEM_OK || gate->result_count == 0u || record.space_id != space_id) {
+        return 0u;
+    }
+    return record.state;
+}
+
+static uint32_t input_recovery_action_flags(uint64_t lifecycle_flags) {
+    return ((uint32_t)(lifecycle_flags >> LUNA_DRIVER_ACTION_LIFECYCLE_SHIFT))
+        & (LUNA_DRIVER_ACTION_INPUT_MINIMAL | LUNA_DRIVER_ACTION_INPUT_OPERATOR_RECOVERY);
+}
+
+static void refresh_input_recovery_state(void) {
+    if (system_query_space_state(LUNA_SPACE_DEVICE) == LUNA_SYSTEM_STATE_DEGRADED) {
+        g_device_lifecycle_flags = device_driver_lifecycle_flags();
+        g_input_recovery_actions = input_recovery_action_flags(g_device_lifecycle_flags);
+        return;
+    }
+    g_device_lifecycle_flags = 0u;
+    g_input_recovery_actions = 0u;
+}
+
+static uint32_t input_minimal_recovery_active(void) {
+    return (g_input_recovery_actions & LUNA_DRIVER_ACTION_INPUT_MINIMAL) != 0u;
+}
+
+static uint32_t input_operator_recovery_active(void) {
+    return (g_input_recovery_actions & LUNA_DRIVER_ACTION_INPUT_OPERATOR_RECOVERY) != 0u;
+}
+
+static uint32_t input_no_local_recovery_active(void) {
+    return (g_device_lifecycle_flags & LUNA_DRIVER_LIFE_INPUT_DEGRADED) != 0u;
+}
+
+static uint32_t input_pointer_path_allowed(void) {
+    return input_minimal_recovery_active() == 0u && input_no_local_recovery_active() == 0u;
+}
+
+static uint32_t input_desktop_keyboard_allowed(void) {
+    return g_desktop_mode != 0u && input_no_local_recovery_active() == 0u;
+}
+
+static uint32_t input_desktop_text_entry_allowed(void) {
+    return g_desktop_mode != 0u
+        && input_no_local_recovery_active() == 0u
+        && input_minimal_recovery_active() == 0u;
+}
+
+static uint32_t input_shell_prompt_needed(void) {
+    return g_desktop_mode == 0u
+        || input_operator_recovery_active() != 0u
+        || input_no_local_recovery_active() != 0u;
+}
+
+static void announce_input_recovery_mode(void) {
+    if (input_no_local_recovery_active() != 0u) {
+        device_write(g_msg_input_recovery_shell);
+        return;
+    }
+    if (input_minimal_recovery_active() != 0u || input_operator_recovery_active() != 0u) {
+        device_write(g_msg_input_recovery_minimal);
+    }
+}
+
+static uint64_t read_user_input_key(uint8_t *out, uint32_t *out_source) {
+    uint64_t got = 0u;
+
+    if (out == 0) {
+        return 0u;
+    }
+    if (out_source != 0) {
+        *out_source = USER_INPUT_SOURCE_NONE;
+    }
+
+    got = device_input_read_key(out);
+    if (got != 0u) {
+        if (out_source != 0) {
+            *out_source = USER_INPUT_SOURCE_KEYBOARD;
+        }
+        return got;
+    }
+
+    if (input_operator_recovery_active() != 0u) {
+        got = device_read_byte(LUNA_DEVICE_ID_INPUT0, out);
+        if (got != 0u) {
+            if (out_source != 0) {
+                *out_source = USER_INPUT_SOURCE_OPERATOR;
+            }
+            return got;
+        }
+    }
+
+    return 0u;
 }
 
 static uint64_t device_read_block(uint32_t device_id, void *out, uint64_t size) {
@@ -6074,10 +6317,11 @@ static void shell_execute(const char *line, size_t len) {
         g_desktop_mode = session_script_present() ? 0u : 1u;
         device_write(g_msg_setup_ok);
         device_write(g_msg_login_ok);
-        if (g_desktop_mode != 0u) {
+        if (g_desktop_mode != 0u && input_no_local_recovery_active() == 0u) {
             device_write(g_msg_desktop_ready);
             boot_desktop_session();
         }
+        announce_input_recovery_mode();
         return;
     }
 
@@ -6100,10 +6344,13 @@ static void shell_execute(const char *line, size_t len) {
         }
         g_desktop_mode = session_script_present() ? 0u : 1u;
         device_write(g_msg_login_ok);
-        if (g_desktop_mode != 0u && g_desktop_booted == 0u) {
+        if (g_desktop_mode != 0u
+            && g_desktop_booted == 0u
+            && input_no_local_recovery_active() == 0u) {
             device_write(g_msg_desktop_ready);
             boot_desktop_session();
         }
+        announce_input_recovery_mode();
         return;
     }
 
@@ -6569,6 +6816,7 @@ static void run_session_script(void) {
             line[len] = '\0';
             device_write_bytes(line, len);
             device_write(g_msg_newline);
+            log_session_script_command(line, len);
             shell_execute(line, len);
             len = 0u;
             continue;
@@ -6593,19 +6841,21 @@ static void run_session_script(void) {
 static __attribute__((unused)) void shell_loop(void) {
     char line[80];
     size_t len = 0u;
+    uint32_t line_source = USER_INPUT_SOURCE_NONE;
     uint32_t suppress_boot_noise = 1u;
     uint32_t suppress_line = 0u;
 
-    if (g_desktop_mode == 0u) {
+    if (input_shell_prompt_needed() != 0u) {
         print_prompt();
     }
     for (;;) {
         struct luna_pointer_event pointer;
         uint8_t ch = 0u;
-        if (device_input_read_pointer(&pointer) != 0u) {
+        uint32_t input_source = USER_INPUT_SOURCE_NONE;
+        if (device_input_read_pointer(&pointer) != 0u && input_pointer_path_allowed() != 0u) {
             handle_pointer_event(&pointer);
         }
-        uint64_t got = device_input_read_key(&ch);
+        uint64_t got = read_user_input_key(&ch, &input_source);
 
         if (got == 0u) {
             continue;
@@ -6613,19 +6863,28 @@ static __attribute__((unused)) void shell_loop(void) {
         g_desktop_shell.last_key = ch;
         g_desktop_shell.key_events += 1u;
         debug_input_byte("[USERDBG] key ", ch);
-        if (g_desktop_mode != 0u) {
+        log_user_input_event(input_source, ch);
+        if (g_desktop_mode != 0u && input_pointer_path_allowed() != 0u) {
             sync_pointer();
         }
 
-        if (handle_desktop_key(ch)) {
+        if (input_source == USER_INPUT_SOURCE_KEYBOARD
+            && input_desktop_keyboard_allowed() != 0u
+            && handle_desktop_key(ch)) {
+            if (g_user_input_debug_budget != 0u) {
+                debug_input_byte("[USER] desktop key=", ch);
+                g_user_input_debug_budget -= 1u;
+            }
             continue;
         }
 
-        if (g_desktop_mode != 0u && append_note_input(ch)) {
+        if (input_source == USER_INPUT_SOURCE_KEYBOARD
+            && input_desktop_text_entry_allowed() != 0u
+            && append_note_input(ch)) {
             continue;
         }
 
-        if (g_desktop_mode != 0u) {
+        if (input_source == USER_INPUT_SOURCE_KEYBOARD && input_desktop_keyboard_allowed() != 0u) {
             if (ch == '\r' || ch == '\n') {
                 sync_launcher(g_launcher_open == 0u ? 1u : 0u);
             }
@@ -6636,6 +6895,7 @@ static __attribute__((unused)) void shell_loop(void) {
             if (ch == '\r' || ch == '\n') {
                 suppress_line = 0u;
                 len = 0u;
+                line_source = USER_INPUT_SOURCE_NONE;
             }
             continue;
         }
@@ -6649,9 +6909,19 @@ static __attribute__((unused)) void shell_loop(void) {
             suppress_boot_noise = 0u;
             device_write(g_msg_newline);
             line[len] = '\0';
+            if (len != 0u) {
+                uint32_t command_source = line_source != USER_INPUT_SOURCE_NONE ? line_source : input_source;
+                log_shell_command("accept", command_source, line, len);
+                log_shell_command("execute", command_source, line, len);
+            }
             shell_execute(line, len);
             len = 0u;
-            print_prompt();
+            line_source = USER_INPUT_SOURCE_NONE;
+            if (g_desktop_mode == 0u
+                || input_source == USER_INPUT_SOURCE_OPERATOR
+                || input_no_local_recovery_active() != 0u) {
+                print_prompt();
+            }
             continue;
         }
 
@@ -6660,6 +6930,9 @@ static __attribute__((unused)) void shell_loop(void) {
                 static const char g_bs[] = "\b \b";
                 len -= 1u;
                 device_write(g_bs);
+                if (len == 0u) {
+                    line_source = USER_INPUT_SOURCE_NONE;
+                }
             }
             continue;
         }
@@ -6673,6 +6946,9 @@ static __attribute__((unused)) void shell_loop(void) {
         line[len] = (char)ch;
         len += 1u;
         line[len] = '\0';
+        if (line_source == USER_INPUT_SOURCE_NONE) {
+            line_source = input_source;
+        }
         {
             char out[2];
             out[0] = (char)ch;
@@ -6727,6 +7003,10 @@ void SYSV_ABI user_entry_boot(const struct luna_bootview *bootview) {
         persist_files_view_state();
     }
     sync_desktop_shell_state();
+    refresh_input_recovery_state();
+    g_user_input_debug_budget = 64u;
+    g_user_command_debug_budget = 32u;
+    g_session_script_debug_budget = 64u;
     g_desktop_mode = (g_user_logged_in != 0u && !session_script_present()) ? 1u : 0u;
     drain_input_noise(LUNA_DEVICE_ID_INPUT0, 64u);
     drain_pointer_noise(64u);
@@ -6739,12 +7019,22 @@ void SYSV_ABI user_entry_boot(const struct luna_bootview *bootview) {
     } else if (g_user_logged_in == 0u) {
         device_write(g_msg_login_required);
         device_write(g_msg_login_hint);
-    } else {
+    } else if (input_no_local_recovery_active() == 0u) {
         device_write(g_msg_desktop_ready);
     }
+    announce_input_recovery_mode();
     serial_write_debug("[USERDBG] msg ok\r\n");
-    sync_pointer();
-    if (g_desktop_mode != 0u && g_user_logged_in != 0u) {
+    if (input_pointer_path_allowed() != 0u) {
+        sync_pointer();
+    } else {
+        g_pointer_active = 0u;
+        g_pointer_buttons = 0u;
+        g_drag_window = 0u;
+        g_resize_window = 0u;
+    }
+    if (g_desktop_mode != 0u
+        && g_user_logged_in != 0u
+        && input_no_local_recovery_active() == 0u) {
         boot_desktop_session();
     }
     run_session_script();

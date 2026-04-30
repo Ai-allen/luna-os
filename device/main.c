@@ -194,6 +194,8 @@ static uint8_t g_virtio_keyboard_ready = 0u;
 static uint8_t g_ps2_controller_known = 0u;
 static uint8_t g_ps2_controller_present = 0u;
 static uint32_t g_ps2_debug_budget = 32u;
+static uint32_t g_input_event_debug_budget = 64u;
+static uint8_t g_last_keyboard_event_source = 0u;
 static uint8_t g_key_queue[32];
 static uint32_t g_key_head = 0u;
 static uint32_t g_key_tail = 0u;
@@ -571,6 +573,38 @@ static const char *input_driver_name(uint32_t family) {
     return "ps2-kbd";
 }
 
+enum {
+    INPUT_EVENT_SOURCE_NONE = 0u,
+    INPUT_EVENT_SOURCE_VIRTIO = 1u,
+    INPUT_EVENT_SOURCE_I8042 = 2u,
+    INPUT_EVENT_SOURCE_OPERATOR = 3u,
+};
+
+static const char *input_event_source_name(uint8_t source) {
+    switch (source) {
+        case INPUT_EVENT_SOURCE_VIRTIO:
+            return "virtio-kbd";
+        case INPUT_EVENT_SOURCE_I8042:
+            return "i8042-kbd";
+        case INPUT_EVENT_SOURCE_OPERATOR:
+            return "serial-operator";
+        default:
+            return "unknown";
+    }
+}
+
+static void serial_write_input_event(uint8_t source, uint8_t value) {
+    if (g_input_event_debug_budget == 0u) {
+        return;
+    }
+    serial_write("[DEVICE] input event src=");
+    serial_write(input_event_source_name(source));
+    serial_write(" key=");
+    serial_write_hex8(value);
+    serial_write("\r\n");
+    g_input_event_debug_budget -= 1u;
+}
+
 static void copy_bytes(void *dst, const void *src, size_t len) {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
@@ -839,6 +873,7 @@ static uint8_t translate_set1(uint8_t code, uint8_t extended) {
         case 0x0Fu: return 0x09u;
         case 0x1Cu: return '\n';
         case 0x39u: return ' ';
+        case 0x0Cu: return '-';
         case 0x0Eu: return 8u;
         case 0x3Bu: return 0x81u;
         case 0x3Cu: return 0x82u;
@@ -875,6 +910,7 @@ static uint8_t translate_set1(uint8_t code, uint8_t extended) {
         case 0x30u: return 'b';
         case 0x31u: return 'n';
         case 0x32u: return 'm';
+        case 0x34u: return '.';
         default: return 0u;
     }
 }
@@ -904,6 +940,7 @@ static uint8_t translate_set2(uint8_t code, uint8_t extended) {
         case 0x0Du: return '\t';
         case 0x5Au: return '\n';
         case 0x29u: return ' ';
+        case 0x4Eu: return '-';
         case 0x66u: return 8u;
         case 0x05u: return 0x81u;
         case 0x06u: return 0x82u;
@@ -940,6 +977,7 @@ static uint8_t translate_set2(uint8_t code, uint8_t extended) {
         case 0x32u: return 'b';
         case 0x31u: return 'n';
         case 0x3Au: return 'm';
+        case 0x49u: return '.';
         default: return 0u;
     }
 }
@@ -1006,14 +1044,22 @@ static void ps2_pump(uint32_t limit) {
 static uint8_t keyboard_poll_byte(void) {
     uint8_t virtio_value = virtio_keyboard_poll_byte();
     if (virtio_value != 0u) {
+        g_last_keyboard_event_source = INPUT_EVENT_SOURCE_VIRTIO;
         return virtio_value;
     }
     uint8_t value = dequeue_key();
     if (value != 0u) {
+        g_last_keyboard_event_source = INPUT_EVENT_SOURCE_I8042;
         return value;
     }
     ps2_pump(32u);
-    return dequeue_key();
+    value = dequeue_key();
+    if (value != 0u) {
+        g_last_keyboard_event_source = INPUT_EVENT_SOURCE_I8042;
+    } else {
+        g_last_keyboard_event_source = INPUT_EVENT_SOURCE_NONE;
+    }
+    return value;
 }
 
 static uint8_t mouse_poll_byte(void) {
@@ -2046,6 +2092,7 @@ static uint8_t virtio_translate_key(uint16_t type, uint16_t code, uint32_t value
         case 0x000Bu: return '0';
         case 0x000Eu: return 8u;
         case 0x000Fu: return '\t';
+        case 0x000Cu: return '-';
         case 0x0010u: return 'q';
         case 0x0011u: return 'w';
         case 0x0012u: return 'e';
@@ -2073,6 +2120,7 @@ static uint8_t virtio_translate_key(uint16_t type, uint16_t code, uint32_t value
         case 0x0030u: return 'b';
         case 0x0031u: return 'n';
         case 0x0032u: return 'm';
+        case 0x0034u: return '.';
         case 0x0039u: return ' ';
         case 0x003Bu: return 0x81u;
         case 0x003Cu: return 0x82u;
@@ -4140,17 +4188,10 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_INPUT0) {
-            uint8_t value = 0u;
-            if (g_virtio_keyboard_ready == 0u) {
-                keyboard_init();
-            }
-            value = keyboard_poll_byte();
-            if (value != 0u && gate->buffer_size != 0u) {
-                ((uint8_t *)(uintptr_t)gate->buffer_addr)[0] = value;
-                gate->size = 1;
-            } else if ((inb(0x3FD) & 0x01u) != 0u && gate->buffer_size != 0u) {
+            if ((inb(0x3FD) & 0x01u) != 0u && gate->buffer_size != 0u) {
                 ((uint8_t *)(uintptr_t)gate->buffer_addr)[0] = inb(0x3F8);
                 gate->size = 1;
+                serial_write_input_event(INPUT_EVENT_SOURCE_OPERATOR, ((uint8_t *)(uintptr_t)gate->buffer_addr)[0]);
             } else {
                 gate->size = 0;
             }
@@ -4274,6 +4315,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             if (value != 0u && gate->buffer_size != 0u) {
                 ((uint8_t *)(uintptr_t)gate->buffer_addr)[0] = value;
                 gate->size = 1u;
+                serial_write_input_event(g_last_keyboard_event_source, value);
             } else {
                 gate->size = 0u;
             }
