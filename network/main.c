@@ -872,9 +872,6 @@ static uint32_t handle_open_session(struct luna_network_gate *gate) {
     struct luna_object_ref resume_ref = {0u, 0u};
     uint64_t size = 0u;
     uint64_t content_size = 0u;
-    if (validate_network_policy(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_OPEN_SESSION, 0u, 0u, 0u) != LUNA_GATE_OK) {
-        return LUNA_NETWORK_ERR_INVALID_CAP;
-    }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(struct luna_link_session)) {
         return LUNA_NETWORK_ERR_RANGE;
     }
@@ -973,9 +970,24 @@ static uint32_t handle_open_session(struct luna_network_gate *gate) {
     session_slot->session.flags = LUNALINK_RESUME_FLAG_ISSUED;
     session_slot->session.resume_low = resume_ref.low;
     session_slot->session.resume_high = resume_ref.high;
+    if (validate_network_policy(
+        LUNA_CAP_NETWORK_SESSION,
+        gate->cid_low,
+        gate->cid_high,
+        gate->caller_space,
+        gate->actor_space,
+        LUNA_NETWORK_OPEN_SESSION,
+        session_slot->session.session_id,
+        0u,
+        0u
+    ) != LUNA_GATE_OK) {
+        session_slot->live = 0u;
+        return LUNA_NETWORK_ERR_INVALID_CAP;
+    }
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, &session_slot->session, sizeof(session_slot->session));
     gate->size = sizeof(session_slot->session);
     gate->result_count = 1u;
+    observe_log("link.trace type=session");
     observe_log("lunalink sess open");
     return LUNA_NETWORK_OK;
 }
@@ -984,13 +996,13 @@ static uint32_t handle_open_channel(struct luna_network_gate *gate) {
     struct luna_link_channel_request request;
     struct lunalink_runtime_session *session_slot;
     struct lunalink_runtime_channel *channel_slot;
-    if (validate_network_policy(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_OPEN_CHANNEL, gate->session_id, 0u, 0u) != LUNA_GATE_OK) {
-        return LUNA_NETWORK_ERR_INVALID_CAP;
-    }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(struct luna_link_channel)) {
         return LUNA_NETWORK_ERR_RANGE;
     }
     copy_bytes(&request, (const void *)(uintptr_t)gate->buffer_addr, sizeof(request));
+    if (request.session_id != gate->session_id) {
+        return LUNA_NETWORK_ERR_INVALID_CAP;
+    }
     session_slot = find_runtime_session(request.session_id);
     if (session_slot == 0) {
         return LUNA_NETWORK_ERR_NOT_FOUND;
@@ -1003,10 +1015,25 @@ static uint32_t handle_open_channel(struct luna_network_gate *gate) {
     channel_slot->channel.session_id = request.session_id;
     channel_slot->channel.kind = request.kind;
     channel_slot->channel.transfer_class = request.transfer_class;
+    if (validate_network_policy(
+        LUNA_CAP_NETWORK_SESSION,
+        gate->cid_low,
+        gate->cid_high,
+        gate->caller_space,
+        gate->actor_space,
+        LUNA_NETWORK_OPEN_CHANNEL,
+        channel_slot->channel.session_id,
+        channel_slot->channel.channel_id,
+        0u
+    ) != LUNA_GATE_OK) {
+        channel_slot->live = 0u;
+        return LUNA_NETWORK_ERR_INVALID_CAP;
+    }
     (void)persist_state();
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, &channel_slot->channel, sizeof(channel_slot->channel));
     gate->size = sizeof(channel_slot->channel);
     gate->result_count = 1u;
+    observe_log("link.trace type=channel");
     observe_log("lunalink chan open");
     return LUNA_NETWORK_OK;
 }
@@ -1025,6 +1052,9 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
         return LUNA_NETWORK_ERR_RANGE;
     }
     copy_bytes(&request, (const void *)(uintptr_t)gate->buffer_addr, sizeof(request));
+    if (request.channel_id != gate->channel_id) {
+        return LUNA_NETWORK_ERR_INVALID_CAP;
+    }
     channel_slot = find_runtime_channel(request.channel_id);
     if (channel_slot == 0) {
         return LUNA_NETWORK_ERR_NOT_FOUND;
@@ -1062,6 +1092,7 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
     }
     gate->size = request.payload_size;
     gate->result_count = 1u;
+    observe_log("link.trace type=send");
     return LUNA_NETWORK_OK;
 }
 
@@ -1118,6 +1149,7 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, g_packet + sizeof(packet), packet.payload_size);
     gate->size = packet.payload_size;
     gate->result_count = 1u;
+    observe_log("link.trace type=recv");
     return LUNA_NETWORK_OK;
 }
 

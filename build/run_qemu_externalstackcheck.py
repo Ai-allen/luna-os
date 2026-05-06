@@ -103,6 +103,7 @@ def main() -> int:
         b"net.send luna-stack-out\r\n"
         b"net.recv\r\n"
         b"net.status\r\n"
+        b"lasql.logs\r\n"
     )
     patch_session_script(commands)
     if LOG_PATH.exists():
@@ -221,6 +222,10 @@ def main() -> int:
         "net.recv state=ready bytes=13",
         "data=luna-stack-in",
         "net.status phase=recv last=ok tx_messages=1 tx_bytes=14 rx_messages=1 rx_bytes=13",
+        "link.trace type=session",
+        "link.trace type=channel",
+        "link.trace type=send",
+        "link.trace type=recv",
     ]
     for needle in required:
         if needle not in stdout:
