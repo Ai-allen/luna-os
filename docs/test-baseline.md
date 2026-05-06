@@ -316,6 +316,35 @@ Frozen current assertions:
   - the VM booted far enough to collect logs, but LunaOS output missed a
     required frozen line
 
+## Real input Baseline
+
+### Purpose
+
+- Verify keyboard input is accepted only from the real device input path.
+- Verify session-script commands are not counted as interactive input.
+- Keep keyboard, serial-operator recovery, and degraded no-local-input paths
+  distinct in gate evidence.
+
+### Required Current Gates
+
+- `python .\build\run_qemu_userinputcheck.py`
+- `python .\build\run_qemu_desktopinputcheck.py`
+- `pwsh -NoProfile -File .\build\run_vmware_inputcheck.ps1`
+
+### Required Current Outputs
+
+- `[DEVICE] input event src=virtio-kbd` or `[DEVICE] input event src=i8042-kbd`
+- `[USER] input lane src=keyboard`
+- `[USER] shell accept src=keyboard`
+- `[USER] shell execute src=keyboard`
+
+### Forbidden Current Outputs
+
+- `[USER] session script cmd=`
+- `[USER] input lane src=operator`
+- `[DEVICE] input event src=serial-operator`
+- `[USER] input recovery=operator-shell`
+
 ## UEFI shellcheck Baseline
 
 ### Purpose

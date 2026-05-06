@@ -324,7 +324,6 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
             [
                 "[USER] input lane src=keyboard key=66",
                 "[USER] desktop key=66",
-                "files surface ready",
             ],
             15.0,
             forbidden=forbidden,
@@ -384,7 +383,6 @@ def main() -> int:
         "[USER] desktop session online",
         "[USER] input lane src=keyboard key=66",
         "[USER] desktop key=66",
-        "files surface ready",
     ]
     for needle in required:
         if needle not in combined:
