@@ -88,6 +88,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 102;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_OBSERVABILITY;
+    gate->actor_space = LUNA_SPACE_OBSERVABILITY;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = 1u;

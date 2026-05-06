@@ -170,6 +170,8 @@ static uint32_t device_read_sector(uint32_t lba, void *buffer) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 3;
     gate->opcode = LUNA_DEVICE_BLOCK_READ;
+    gate->caller_space = LUNA_SPACE_BOOT;
+    gate->actor_space = LUNA_SPACE_BOOT;
     gate->device_id = LUNA_DEVICE_ID_DISK0;
     gate->flags = lba;
     gate->cid_low = g_device_read_cid.low;

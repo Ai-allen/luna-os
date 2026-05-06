@@ -1113,7 +1113,16 @@ static int mouse_poll_event(struct luna_pointer_event *event) {
     return 1;
 }
 
-static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+static uint32_t validate_capability(
+    uint64_t domain_key,
+    uint64_t cid_low,
+    uint64_t cid_high,
+    uint32_t target_gate,
+    uint32_t device_id,
+    uint64_t caller_space,
+    uint64_t actor_space,
+    uint64_t policy_flags
+) {
     volatile struct luna_manifest *manifest =
         (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
     volatile struct luna_gate *gate =
@@ -1123,13 +1132,49 @@ static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint6
         ((volatile uint8_t *)gate)[i] = 0;
     }
     gate->sequence = 91;
-    gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->opcode = LUNA_GATE_VALIDATE_DEVICE;
+    gate->caller_space = caller_space;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
     gate->target_space = LUNA_SPACE_DEVICE;
     gate->target_gate = target_gate;
+    gate->ttl = device_id;
+    gate->seal_low = actor_space;
+    gate->nonce = policy_flags;
+
+    ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)manifest->security_gate_entry)(
+        (struct luna_gate *)(uintptr_t)manifest->security_gate_base
+    );
+    return gate->status;
+}
+
+static uint32_t validate_network_device_policy(
+    uint64_t domain_key,
+    uint64_t cid_low,
+    uint64_t cid_high,
+    uint32_t target_gate,
+    uint64_t caller_space,
+    uint64_t actor_space
+) {
+    volatile struct luna_manifest *manifest =
+        (volatile struct luna_manifest *)(uintptr_t)LUNA_MANIFEST_ADDR;
+    volatile struct luna_gate *gate =
+        (volatile struct luna_gate *)(uintptr_t)manifest->security_gate_base;
+
+    for (size_t i = 0; i < sizeof(struct luna_gate); ++i) {
+        ((volatile uint8_t *)gate)[i] = 0;
+    }
+    gate->sequence = 96;
+    gate->opcode = LUNA_GATE_VALIDATE_NETWORK;
+    gate->caller_space = caller_space;
+    gate->domain_key = domain_key;
+    gate->cid_low = cid_low;
+    gate->cid_high = cid_high;
+    gate->target_space = LUNA_SPACE_DEVICE;
+    gate->target_gate = target_gate;
+    gate->seal_low = actor_space;
+    gate->nonce = LUNA_NETWORK_POLICY_RAW_PACKET | LUNA_NETWORK_POLICY_DEVICE_EXEC;
 
     ((void (SYSV_ABI *)(struct luna_gate *))(uintptr_t)manifest->security_gate_entry)(
         (struct luna_gate *)(uintptr_t)manifest->security_gate_base
@@ -1664,8 +1709,26 @@ static int should_log_cap_deny(uint32_t target_gate, uint32_t status) {
     return 0;
 }
 
-static int allow_device_call(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
-    uint32_t status = validate_capability(domain_key, cid_low, cid_high, target_gate);
+static int allow_device_call(
+    uint64_t domain_key,
+    uint64_t cid_low,
+    uint64_t cid_high,
+    uint32_t target_gate,
+    uint32_t device_id,
+    uint64_t caller_space,
+    uint64_t actor_space,
+    uint64_t policy_flags
+) {
+    uint32_t status = validate_capability(
+        domain_key,
+        cid_low,
+        cid_high,
+        target_gate,
+        device_id,
+        caller_space,
+        actor_space,
+        policy_flags
+    );
     if (status != LUNA_GATE_OK) {
         observe_log(3u, "device.call denied");
         if (should_log_cap_deny(target_gate, status)) {
@@ -4554,7 +4617,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
     gate->result_count = 0;
     gate->status = LUNA_DEVICE_ERR_INVALID_CAP;
     if (gate->opcode == LUNA_DEVICE_LIST) {
-        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_LIST)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_LIST, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_CONTROL)) {
             return;
         }
         if (gate->buffer_size < sizeof(devices[0])) {
@@ -4575,7 +4638,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         uint32_t start = gate->flags;
         uint32_t available = 0u;
         uint32_t count = 0u;
-        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_CENSUS)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_CENSUS, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_CONTROL)) {
             return;
         }
         if (gate->buffer_size < sizeof(resolved_lanes[0])) {
@@ -4619,7 +4682,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
     }
     if (gate->opcode == LUNA_DEVICE_PCI_SCAN) {
         uint32_t capacity = (uint32_t)(gate->buffer_size / sizeof(struct luna_pci_record));
-        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_PCI_SCAN)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_LIST, gate->cid_low, gate->cid_high, LUNA_DEVICE_PCI_SCAN, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_CONTROL)) {
             return;
         }
         if (capacity == 0u) {
@@ -4635,7 +4698,11 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         return;
     }
     if (gate->opcode == LUNA_DEVICE_READ) {
-        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_READ)) {
+        uint64_t policy_flags = LUNA_DEVICE_POLICY_READ;
+        if (gate->device_id == LUNA_DEVICE_ID_INPUT0 || gate->device_id == LUNA_DEVICE_ID_POINTER0) {
+            policy_flags |= LUNA_DEVICE_POLICY_POLL;
+        }
+        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_READ, gate->device_id, gate->caller_space, gate->actor_space, policy_flags)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_SERIAL0) {
@@ -4700,6 +4767,18 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_NET0) {
+            if (validate_network_device_policy(
+                LUNA_CAP_DEVICE_READ,
+                gate->cid_low,
+                gate->cid_high,
+                LUNA_DEVICE_READ,
+                gate->caller_space,
+                gate->actor_space
+            ) != LUNA_GATE_OK) {
+                observe_log(3u, "network.raw denied");
+                gate->status = LUNA_DEVICE_ERR_INVALID_CAP;
+                return;
+            }
             if (g_net_size != 0u) {
                 if (gate->buffer_size < g_net_size) {
                     gate->status = LUNA_DEVICE_ERR_NOT_FOUND;
@@ -4745,7 +4824,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         return;
     }
     if (gate->opcode == LUNA_DEVICE_QUERY) {
-        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_QUERY)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_QUERY, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_READ)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_NET0 && gate->buffer_size >= sizeof(struct luna_net_info)) {
@@ -4760,7 +4839,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
     }
     if (gate->opcode == LUNA_DEVICE_WRITE) {
         const uint8_t *src = (const uint8_t *)(uintptr_t)gate->buffer_addr;
-        if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_WRITE)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_WRITE, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_WRITE)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_SERIAL0) {
@@ -4778,6 +4857,18 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         }
         if (gate->device_id == LUNA_DEVICE_ID_NET0) {
             uint64_t size = gate->size;
+            if (validate_network_device_policy(
+                LUNA_CAP_DEVICE_WRITE,
+                gate->cid_low,
+                gate->cid_high,
+                LUNA_DEVICE_WRITE,
+                gate->caller_space,
+                gate->actor_space
+            ) != LUNA_GATE_OK) {
+                observe_log(3u, "network.raw denied");
+                gate->status = LUNA_DEVICE_ERR_INVALID_CAP;
+                return;
+            }
             if (size > gate->buffer_size || size > sizeof(g_net_buffer)) {
                 gate->status = LUNA_DEVICE_ERR_NOT_FOUND;
                 return;
@@ -4804,7 +4895,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         return;
     }
     if (gate->opcode == LUNA_DEVICE_INPUT_READ) {
-        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_INPUT_READ)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_INPUT_READ, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_READ | LUNA_DEVICE_POLICY_POLL)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_INPUT0) {
@@ -4840,7 +4931,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
         return;
     }
     if (gate->opcode == LUNA_DEVICE_BLOCK_READ) {
-        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_READ)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_READ, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_READ, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_READ)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_DISK0
@@ -4881,11 +4972,15 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
                     LUNA_CAP_DEVICE_WRITE,
                     gate->cid_low,
                     gate->cid_high,
-                    LUNA_DEVICE_BLOCK_WRITE_INSTALL_TARGET
+                    LUNA_DEVICE_BLOCK_WRITE_INSTALL_TARGET,
+                    gate->device_id,
+                    gate->caller_space,
+                    gate->actor_space,
+                    LUNA_DEVICE_POLICY_WRITE | LUNA_DEVICE_POLICY_UNSAFE_WRITE
                 )) {
                 return;
             }
-        } else if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_WRITE)) {
+        } else if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_BLOCK_WRITE, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_WRITE | LUNA_DEVICE_POLICY_UNSAFE_WRITE)) {
             return;
         }
         if (gate->device_id == LUNA_DEVICE_ID_DISK1
@@ -4916,7 +5011,7 @@ void SYSV_ABI device_entry_gate(struct luna_device_gate *gate) {
     }
     if (gate->opcode == LUNA_DEVICE_DISPLAY_PRESENT) {
         uint64_t bytes;
-        if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_DISPLAY_PRESENT)) {
+        if (!allow_device_call(LUNA_CAP_DEVICE_WRITE, gate->cid_low, gate->cid_high, LUNA_DEVICE_DISPLAY_PRESENT, gate->device_id, gate->caller_space, gate->actor_space, LUNA_DEVICE_POLICY_WRITE)) {
             return;
         }
         if (gate->device_id != LUNA_DEVICE_ID_DISPLAY0

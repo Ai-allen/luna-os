@@ -370,6 +370,8 @@ struct LunaDeviceGate {
     device_id: u32,
     result_count: u32,
     flags: u32,
+    caller_space: u64,
+    actor_space: u64,
     cid_low: u64,
     cid_high: u64,
     size: u64,
@@ -833,6 +835,8 @@ unsafe fn ata_read_sector(lba: u32, out: *mut u8) -> bool {
     gate.opcode = LUNA_DEVICE_BLOCK_READ;
     gate.device_id = LUNA_DEVICE_ID_DISK0 as u32;
     gate.flags = lba;
+    gate.caller_space = SPACE_DATA;
+    gate.actor_space = SPACE_DATA;
     gate.cid_low = unsafe { DEVICE_READ_LOW };
     gate.cid_high = unsafe { DEVICE_READ_HIGH };
     gate.buffer_addr = out as u64;
@@ -859,6 +863,8 @@ unsafe fn ata_write_sector(lba: u32, src: *const u8) -> bool {
     gate.opcode = LUNA_DEVICE_BLOCK_WRITE;
     gate.device_id = LUNA_DEVICE_ID_DISK0 as u32;
     gate.flags = lba;
+    gate.caller_space = SPACE_DATA;
+    gate.actor_space = SPACE_DATA;
     gate.cid_low = unsafe { DEVICE_WRITE_LOW };
     gate.cid_high = unsafe { DEVICE_WRITE_HIGH };
     gate.buffer_addr = src as u64;

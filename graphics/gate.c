@@ -50,6 +50,7 @@ static void clamp_window(struct luna_window_record *window) {
 
 void SYSV_ABI graphics_entry_gate(struct luna_graphics_gate *gate) {
     struct luna_window_record *window;
+    uint64_t caller_space;
 
     if (gate == 0) {
         return;
@@ -57,8 +58,9 @@ void SYSV_ABI graphics_entry_gate(struct luna_graphics_gate *gate) {
 
     gate->status = LUNA_GRAPHICS_OK;
     gate->result_count = 0u;
+    caller_space = gate->caller_space != 0u ? gate->caller_space : LUNA_SPACE_GRAPHICS;
 
-    if (validate_capability(LUNA_CAP_GRAPHICS_DRAW, gate->cid_low, gate->cid_high, gate->opcode) != LUNA_GATE_OK) {
+    if (validate_capability(LUNA_CAP_GRAPHICS_DRAW, gate->cid_low, gate->cid_high, caller_space, gate->opcode) != LUNA_GATE_OK) {
         gate->status = LUNA_GRAPHICS_ERR_INVALID_CAP;
         return;
     }

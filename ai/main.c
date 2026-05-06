@@ -49,7 +49,7 @@ static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint6
     zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 94;
     gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->caller_space = LUNA_SPACE_AI;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
@@ -69,6 +69,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 93;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_AI;
+    gate->actor_space = LUNA_SPACE_AI;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = 1u;

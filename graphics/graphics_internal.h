@@ -84,7 +84,7 @@ extern struct luna_window_record g_windows[8];
 void zero_bytes(void *ptr, size_t len);
 
 uint32_t request_capability(uint64_t domain_key, struct luna_cid *out);
-uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate);
+uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint64_t caller_space, uint32_t target_gate);
 void device_write(const char *text);
 int device_read_display_info(struct luna_display_info *info);
 void init_framebuffer_from_info(const struct luna_display_info *info);

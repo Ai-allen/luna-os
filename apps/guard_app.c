@@ -322,6 +322,8 @@ static uint32_t read_device_count(struct luna_cid cid) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 93u;
     gate->opcode = LUNA_DEVICE_LIST;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = cid.low;
     gate->cid_high = cid.high;
     gate->buffer_addr = manifest->list_buffer_base;
@@ -420,6 +422,8 @@ static __attribute__((unused)) void preview_device_lanes(const struct luna_bootv
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 95u;
     gate->opcode = LUNA_DEVICE_LIST;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = cid.low;
     gate->cid_high = cid.high;
     gate->buffer_addr = manifest->list_buffer_base;

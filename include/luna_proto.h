@@ -92,6 +92,8 @@ enum luna_gate_opcode {
     LUNA_GATE_CRYPTO_SECRET = 15,
     LUNA_GATE_TRUST_EVAL = 16,
     LUNA_GATE_QUERY_GOVERN = 17,
+    LUNA_GATE_VALIDATE_NETWORK = 18,
+    LUNA_GATE_VALIDATE_DEVICE = 19,
 };
 
 enum luna_gate_status {
@@ -667,6 +669,24 @@ enum luna_network_status {
     LUNA_NETWORK_ERR_RANGE = 0xA612u,
     LUNA_NETWORK_ERR_NOT_FOUND = 0xA613u,
     LUNA_NETWORK_ERR_BAD_STATE = 0xA614u,
+};
+
+enum luna_network_policy_flags {
+    LUNA_NETWORK_POLICY_RAW_PACKET = 1u << 0,
+    LUNA_NETWORK_POLICY_DEGRADED = 1u << 1,
+    LUNA_NETWORK_POLICY_OFFLINE = 1u << 2,
+    LUNA_NETWORK_POLICY_SOFT_LOOP = 1u << 3,
+    LUNA_NETWORK_POLICY_DEVICE_EXEC = 1u << 4,
+};
+
+enum luna_device_policy_flags {
+    LUNA_DEVICE_POLICY_READ = 1u << 0,
+    LUNA_DEVICE_POLICY_WRITE = 1u << 1,
+    LUNA_DEVICE_POLICY_CONTROL = 1u << 2,
+    LUNA_DEVICE_POLICY_UNSAFE_WRITE = 1u << 3,
+    LUNA_DEVICE_POLICY_DEGRADED = 1u << 4,
+    LUNA_DEVICE_POLICY_RECOVERY = 1u << 5,
+    LUNA_DEVICE_POLICY_POLL = 1u << 6,
 };
 
 enum luna_link_channel_kind {
@@ -1326,6 +1346,8 @@ struct luna_device_gate {
     uint32_t device_id;
     uint32_t result_count;
     uint32_t flags;
+    uint64_t caller_space;
+    uint64_t actor_space;
     uint64_t cid_low;
     uint64_t cid_high;
     uint64_t size;
@@ -1439,6 +1461,10 @@ struct luna_network_gate {
     uint32_t opcode;
     uint32_t status;
     uint32_t result_count;
+    uint64_t caller_space;
+    uint64_t actor_space;
+    uint32_t session_id;
+    uint32_t channel_id;
     uint64_t cid_low;
     uint64_t cid_high;
     uint64_t size;
@@ -1452,6 +1478,8 @@ struct luna_graphics_gate {
     uint32_t opcode;
     uint32_t status;
     uint32_t result_count;
+    uint64_t caller_space;
+    uint64_t actor_space;
     uint64_t cid_low;
     uint64_t cid_high;
     uint32_t window_id;

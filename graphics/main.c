@@ -46,12 +46,12 @@ uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
     return gate->status;
 }
 
-uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint64_t caller_space, uint32_t target_gate) {
     volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
     zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 43;
     gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->caller_space = caller_space != 0u ? caller_space : LUNA_SPACE_GRAPHICS;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
@@ -70,6 +70,8 @@ void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 42;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_GRAPHICS;
+    gate->actor_space = LUNA_SPACE_GRAPHICS;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;

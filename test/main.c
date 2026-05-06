@@ -354,6 +354,8 @@ void SYSV_ABI test_entry_boot(const struct luna_bootview *bootview) {
     zero_bytes((void *)(uintptr_t)manifest->list_buffer_base, manifest->list_buffer_size);
     device_gate->sequence = 40;
     device_gate->opcode = LUNA_DEVICE_LIST;
+    device_gate->caller_space = LUNA_AUX_DIAG_SPACE_ID;
+    device_gate->actor_space = LUNA_AUX_DIAG_SPACE_ID;
     device_gate->cid_low = cid_device_list.low;
     device_gate->cid_high = cid_device_list.high;
     device_gate->buffer_addr = manifest->list_buffer_base;
@@ -437,6 +439,8 @@ void SYSV_ABI test_entry_boot(const struct luna_bootview *bootview) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     graphics_gate->sequence = 70;
     graphics_gate->opcode = LUNA_GRAPHICS_DRAW_CHAR;
+    graphics_gate->caller_space = LUNA_AUX_DIAG_SPACE_ID;
+    graphics_gate->actor_space = LUNA_AUX_DIAG_SPACE_ID;
     graphics_gate->cid_low = cid_graphics_draw.low;
     graphics_gate->cid_high = cid_graphics_draw.high;
     graphics_gate->x = 1u;

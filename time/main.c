@@ -37,7 +37,7 @@ static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint6
     }
     gate->sequence = 82;
     gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->caller_space = LUNA_SPACE_TIME;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
@@ -64,6 +64,8 @@ static void device_write(const char *text) {
     }
     gate->sequence = 81;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_TIME;
+    gate->actor_space = LUNA_SPACE_TIME;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;
@@ -87,6 +89,8 @@ static uint64_t device_clock_now(void) {
     }
     gate->sequence = 83;
     gate->opcode = LUNA_DEVICE_READ;
+    gate->caller_space = LUNA_SPACE_TIME;
+    gate->actor_space = LUNA_SPACE_TIME;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_CLOCK0;

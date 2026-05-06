@@ -210,6 +210,8 @@ struct LunaDeviceGate {
     device_id: u32,
     result_count: u32,
     flags: u32,
+    caller_space: u64,
+    actor_space: u64,
     cid_low: u64,
     cid_high: u64,
     size: u64,
@@ -370,6 +372,8 @@ fn device_write(text: &[u8], bootview: *const LunaBootView) -> bool {
     gate.sequence = 900;
     gate.opcode = DEVICE_WRITE;
     gate.device_id = 1;
+    gate.caller_space = SPACE_SYSTEM as u64;
+    gate.actor_space = SPACE_SYSTEM as u64;
     gate.cid_low = unsafe { DEVICE_WRITE_LOW };
     gate.cid_high = unsafe { DEVICE_WRITE_HIGH };
     gate.size = text.len() as u64;
@@ -710,6 +714,8 @@ fn device_block_io(
     gate.opcode = opcode;
     gate.device_id = device_id;
     gate.flags = lba;
+    gate.caller_space = SPACE_SYSTEM as u64;
+    gate.actor_space = SPACE_SYSTEM as u64;
     gate.cid_low = cid_low;
     gate.cid_high = cid_high;
     gate.size = DISK_SECTOR_SIZE as u64;

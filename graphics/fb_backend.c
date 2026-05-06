@@ -52,6 +52,8 @@ void device_present_framebuffer(void) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 46;
     gate->opcode = LUNA_DEVICE_DISPLAY_PRESENT;
+    gate->caller_space = LUNA_SPACE_GRAPHICS;
+    gate->actor_space = LUNA_SPACE_GRAPHICS;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_DISPLAY0;
@@ -189,6 +191,8 @@ void legacy_device_put(uint32_t x, uint32_t y, uint8_t glyph, uint8_t attr) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 44;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_GRAPHICS;
+    gate->actor_space = LUNA_SPACE_GRAPHICS;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_DISPLAY0;
@@ -312,6 +316,8 @@ int device_read_display_info(struct luna_display_info *info) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 45;
     gate->opcode = LUNA_DEVICE_READ;
+    gate->caller_space = LUNA_SPACE_GRAPHICS;
+    gate->actor_space = LUNA_SPACE_GRAPHICS;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_DISPLAY0;

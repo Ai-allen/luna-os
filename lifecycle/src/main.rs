@@ -90,6 +90,8 @@ struct LunaDeviceGate {
     device_id: u32,
     result_count: u32,
     flags: u32,
+    caller_space: u64,
+    actor_space: u64,
     cid_low: u64,
     cid_high: u64,
     size: u64,
@@ -210,6 +212,8 @@ fn device_write(text: &[u8]) -> bool {
     gate.sequence = 81;
     gate.opcode = DEVICE_WRITE;
     gate.device_id = 1;
+    gate.caller_space = 9;
+    gate.actor_space = 9;
     gate.cid_low = unsafe { DEVICE_WRITE_LOW };
     gate.cid_high = unsafe { DEVICE_WRITE_HIGH };
     gate.size = text.len() as u64;

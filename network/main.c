@@ -183,17 +183,31 @@ static uint32_t request_capability(uint64_t domain_key, struct luna_cid *out) {
     return gate->status;
 }
 
-static uint32_t validate_capability(uint64_t domain_key, uint64_t cid_low, uint64_t cid_high, uint32_t target_gate) {
+static uint32_t validate_network_policy(
+    uint64_t domain_key,
+    uint64_t cid_low,
+    uint64_t cid_high,
+    uint64_t caller_space,
+    uint64_t actor_space,
+    uint32_t target_gate,
+    uint32_t session_id,
+    uint32_t channel_id,
+    uint64_t policy_flags
+) {
     volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
     zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
     gate->sequence = 63;
-    gate->opcode = LUNA_GATE_VALIDATE_CAP;
-    gate->caller_space = 0;
+    gate->opcode = LUNA_GATE_VALIDATE_NETWORK;
+    gate->caller_space = caller_space;
     gate->domain_key = domain_key;
     gate->cid_low = cid_low;
     gate->cid_high = cid_high;
     gate->target_space = LUNA_SPACE_NETWORK;
     gate->target_gate = target_gate;
+    gate->ttl = session_id;
+    gate->uses = channel_id;
+    gate->seal_low = actor_space;
+    gate->nonce = policy_flags;
     ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
     return gate->status;
 }
@@ -271,6 +285,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 62;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_NETWORK;
+    gate->actor_space = LUNA_SPACE_NETWORK;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;
@@ -280,11 +296,13 @@ static void device_write(const char *text) {
     ((device_gate_fn_t)(uintptr_t)g_manifest->device_gate_entry)((struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base);
 }
 
-static uint32_t device_packet_write(const uint8_t *payload, uint64_t size) {
+static uint32_t device_packet_write(const uint8_t *payload, uint64_t size, uint64_t actor_space) {
     volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base;
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 64;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_NETWORK;
+    gate->actor_space = actor_space;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_NET0;
@@ -295,11 +313,13 @@ static uint32_t device_packet_write(const uint8_t *payload, uint64_t size) {
     return gate->status;
 }
 
-static uint32_t device_packet_read(uint8_t *payload, uint64_t *size) {
+static uint32_t device_packet_read(uint8_t *payload, uint64_t *size, uint64_t actor_space) {
     volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base;
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 65;
     gate->opcode = LUNA_DEVICE_READ;
+    gate->caller_space = LUNA_SPACE_NETWORK;
+    gate->actor_space = actor_space;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_NET0;
@@ -311,12 +331,14 @@ static uint32_t device_packet_read(uint8_t *payload, uint64_t *size) {
     return gate->status;
 }
 
-static uint32_t device_query_net(struct luna_net_info *out) {
+static uint32_t device_query_net(struct luna_net_info *out, uint64_t actor_space) {
     volatile struct luna_device_gate *gate = (volatile struct luna_device_gate *)(uintptr_t)g_manifest->device_gate_base;
     zero_bytes(out, sizeof(*out));
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 66;
     gate->opcode = LUNA_DEVICE_QUERY;
+    gate->caller_space = LUNA_SPACE_NETWORK;
+    gate->actor_space = actor_space;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_NET0;
@@ -730,7 +752,7 @@ static uint32_t handle_pair_peer(struct luna_network_gate *gate) {
     struct lunalink_runtime_peer *peer_slot;
     struct lunalink_pairing_record record;
     struct luna_object_ref pairing_ref;
-    if (validate_capability(LUNA_CAP_NETWORK_PAIR, gate->cid_low, gate->cid_high, LUNA_NETWORK_PAIR_PEER) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_PAIR, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_PAIR_PEER, 0u, 0u, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(struct luna_link_peer)) {
@@ -850,7 +872,7 @@ static uint32_t handle_open_session(struct luna_network_gate *gate) {
     struct luna_object_ref resume_ref = {0u, 0u};
     uint64_t size = 0u;
     uint64_t content_size = 0u;
-    if (validate_capability(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, LUNA_NETWORK_OPEN_SESSION) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_OPEN_SESSION, 0u, 0u, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(struct luna_link_session)) {
@@ -962,7 +984,7 @@ static uint32_t handle_open_channel(struct luna_network_gate *gate) {
     struct luna_link_channel_request request;
     struct lunalink_runtime_session *session_slot;
     struct lunalink_runtime_channel *channel_slot;
-    if (validate_capability(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, LUNA_NETWORK_OPEN_CHANNEL) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_SESSION, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_OPEN_CHANNEL, gate->session_id, 0u, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(struct luna_link_channel)) {
@@ -996,7 +1018,7 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
     struct lunalink_runtime_peer *peer_slot;
     struct lunalink_packet packet;
     uint64_t total_size;
-    if (validate_capability(LUNA_CAP_NETWORK_SEND, gate->cid_low, gate->cid_high, LUNA_NETWORK_SEND_CHANNEL) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_SEND, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_SEND_CHANNEL, gate->session_id, gate->channel_id, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(request)) {
@@ -1026,7 +1048,7 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
     packet.payload_size = (uint32_t)request.payload_size;
     copy_bytes(g_packet, &packet, sizeof(packet));
     copy_bytes(g_packet + sizeof(packet), (const void *)(uintptr_t)request.payload_addr, (size_t)request.payload_size);
-    if (device_packet_write(g_packet, total_size) != LUNA_DEVICE_OK) {
+    if (device_packet_write(g_packet, total_size, gate->actor_space) != LUNA_DEVICE_OK) {
         observe_log("lunalink send err");
         return LUNA_NETWORK_ERR_RANGE;
     }
@@ -1048,9 +1070,9 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
     struct lunalink_runtime_session *session_slot;
     struct lunalink_runtime_peer *peer_slot;
     struct lunalink_packet packet;
-    uint32_t channel_id = (uint32_t)gate->flags;
+    uint32_t channel_id = gate->channel_id != 0u ? gate->channel_id : (uint32_t)gate->flags;
     uint64_t packet_size = 0u;
-    if (validate_capability(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, LUNA_NETWORK_RECV_CHANNEL) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_RECV_CHANNEL, gate->session_id, channel_id, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || channel_id == 0u) {
@@ -1068,7 +1090,7 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
     if (peer_slot == 0) {
         return LUNA_NETWORK_ERR_BAD_STATE;
     }
-    if (device_packet_read(g_packet, &packet_size) != LUNA_DEVICE_OK) {
+    if (device_packet_read(g_packet, &packet_size, gate->actor_space) != LUNA_DEVICE_OK) {
         observe_log("lunalink recv err");
         return LUNA_NETWORK_ERR_RANGE;
     }
@@ -1101,13 +1123,13 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
 
 static uint32_t handle_get_info(struct luna_network_gate *gate) {
     struct luna_net_info info;
-    if (validate_capability(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, LUNA_NETWORK_GET_INFO) != LUNA_GATE_OK) {
+    if (validate_network_policy(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_GET_INFO, 0u, 0u, 0u) != LUNA_GATE_OK) {
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(info)) {
         return LUNA_NETWORK_ERR_RANGE;
     }
-    if (device_query_net(&info) != LUNA_DEVICE_OK) {
+    if (device_query_net(&info, gate->actor_space) != LUNA_DEVICE_OK) {
         return LUNA_NETWORK_ERR_RANGE;
     }
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, &info, sizeof(info));
@@ -1140,7 +1162,7 @@ void SYSV_ABI network_entry_gate(struct luna_network_gate *gate) {
     gate->result_count = 0u;
     gate->status = LUNA_NETWORK_ERR_INVALID_CAP;
     if (gate->opcode == LUNA_NETWORK_SEND_PACKET) {
-        if (validate_capability(LUNA_CAP_NETWORK_SEND, gate->cid_low, gate->cid_high, LUNA_NETWORK_SEND_PACKET) != LUNA_GATE_OK) {
+        if (validate_network_policy(LUNA_CAP_NETWORK_SEND, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_SEND_PACKET, 0u, 0u, LUNA_NETWORK_POLICY_RAW_PACKET) != LUNA_GATE_OK) {
             return;
         }
         if (gate->size > gate->buffer_size || gate->size > sizeof(g_packet)) {
@@ -1148,14 +1170,14 @@ void SYSV_ABI network_entry_gate(struct luna_network_gate *gate) {
             return;
         }
         copy_bytes(g_packet, (const void *)(uintptr_t)gate->buffer_addr, (size_t)gate->size);
-        gate->status = device_packet_write(g_packet, gate->size) == LUNA_DEVICE_OK ? LUNA_NETWORK_OK : LUNA_NETWORK_ERR_RANGE;
+        gate->status = device_packet_write(g_packet, gate->size, gate->actor_space) == LUNA_DEVICE_OK ? LUNA_NETWORK_OK : LUNA_NETWORK_ERR_RANGE;
         return;
     }
     if (gate->opcode == LUNA_NETWORK_RECV_PACKET) {
-        if (validate_capability(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, LUNA_NETWORK_RECV_PACKET) != LUNA_GATE_OK) {
+        if (validate_network_policy(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_RECV_PACKET, 0u, 0u, LUNA_NETWORK_POLICY_RAW_PACKET) != LUNA_GATE_OK) {
             return;
         }
-        if (device_packet_read(g_packet, &gate->size) != LUNA_DEVICE_OK) {
+        if (device_packet_read(g_packet, &gate->size, gate->actor_space) != LUNA_DEVICE_OK) {
             gate->status = LUNA_NETWORK_ERR_RANGE;
             return;
         }

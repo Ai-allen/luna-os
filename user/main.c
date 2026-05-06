@@ -3015,6 +3015,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 52;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;
@@ -3039,6 +3041,8 @@ static uint64_t device_input_read_key(uint8_t *out) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 55;
     gate->opcode = LUNA_DEVICE_INPUT_READ;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_INPUT0;
@@ -3059,6 +3063,8 @@ static uint64_t device_input_read_pointer(struct luna_pointer_event *out) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 56;
     gate->opcode = LUNA_DEVICE_INPUT_READ;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = LUNA_DEVICE_ID_POINTER0;
@@ -3303,6 +3309,8 @@ static uint64_t device_read_block(uint32_t device_id, void *out, uint64_t size) 
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 53;
     gate->opcode = LUNA_DEVICE_READ;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = device_id;
@@ -3324,6 +3332,8 @@ static __attribute__((unused)) uint32_t device_write_block(uint32_t device_id, c
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 53;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = device_id;
@@ -3345,6 +3355,8 @@ static __attribute__((unused)) uint32_t device_query(uint32_t device_id, void *o
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 54;
     gate->opcode = LUNA_DEVICE_QUERY;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_read_cid.low;
     gate->cid_high = g_device_read_cid.high;
     gate->device_id = device_id;
@@ -3375,6 +3387,8 @@ static uint32_t network_pair_peer(const char *name, struct luna_link_peer *out) 
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 57;
     gate->opcode = LUNA_NETWORK_PAIR_PEER;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_network_pair_cid.low;
     gate->cid_high = g_network_pair_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)stage;
@@ -3405,6 +3419,8 @@ static uint32_t network_pair_peer(const char *name, struct luna_link_peer *out) 
         zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
         gate->sequence = 58;
         gate->opcode = LUNA_NETWORK_PAIR_PEER;
+        gate->caller_space = LUNA_SPACE_USER;
+        gate->actor_space = LUNA_SPACE_USER;
         gate->cid_low = g_network_pair_cid.low;
         gate->cid_high = g_network_pair_cid.high;
         zero_bytes(stage, sizeof(*stage));
@@ -3442,6 +3458,8 @@ static uint32_t network_open_session(uint32_t peer_id, struct luna_link_session 
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 58;
     gate->opcode = LUNA_NETWORK_OPEN_SESSION;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_network_session_cid.low;
     gate->cid_high = g_network_session_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)stage;
@@ -3479,6 +3497,9 @@ static uint32_t network_open_channel(uint32_t session_id, uint32_t kind, uint32_
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 59;
     gate->opcode = LUNA_NETWORK_OPEN_CHANNEL;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
+    gate->session_id = session_id;
     gate->cid_low = g_network_session_cid.low;
     gate->cid_high = g_network_session_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)stage;
@@ -3518,6 +3539,9 @@ static uint32_t network_send_channel(uint32_t channel_id, const void *payload, u
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 60;
     gate->opcode = LUNA_NETWORK_SEND_CHANNEL;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
+    gate->channel_id = channel_id;
     gate->cid_low = g_network_send_cid.low;
     gate->cid_high = g_network_send_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)request_stage;
@@ -3546,6 +3570,9 @@ static uint32_t network_recv_channel(uint32_t channel_id, void *out, uint64_t si
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 61;
     gate->opcode = LUNA_NETWORK_RECV_CHANNEL;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
+    gate->channel_id = channel_id;
     gate->cid_low = g_network_recv_cid.low;
     gate->cid_high = g_network_recv_cid.high;
     gate->flags = channel_id;
@@ -3578,6 +3605,8 @@ static uint32_t network_send_packet(const void *payload, uint64_t size) {
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 62;
     gate->opcode = LUNA_NETWORK_SEND_PACKET;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_network_send_cid.low;
     gate->cid_high = g_network_send_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)stage;
@@ -3607,6 +3636,8 @@ static uint32_t network_recv_packet(void *out, uint64_t size, uint64_t *out_size
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 64;
     gate->opcode = LUNA_NETWORK_RECV_PACKET;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_network_recv_cid.low;
     gate->cid_high = g_network_recv_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)stage;
@@ -3633,6 +3664,8 @@ static uint32_t network_get_info(struct luna_net_info *out) {
     zero_bytes((void *)(uintptr_t)manifest->network_gate_base, sizeof(struct luna_network_gate));
     gate->sequence = 63;
     gate->opcode = LUNA_NETWORK_GET_INFO;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_network_recv_cid.low;
     gate->cid_high = g_network_recv_cid.high;
     gate->buffer_addr = (uint64_t)(uintptr_t)out;
@@ -3652,6 +3685,8 @@ static uint32_t graphics_set_active_window(uint32_t window_id) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 68;
     gate->opcode = LUNA_GRAPHICS_SET_ACTIVE_WINDOW;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -3677,6 +3712,8 @@ static uint32_t graphics_create_window_native(
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 67u;
     gate->opcode = LUNA_GRAPHICS_CREATE_WINDOW;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->x = x;
@@ -3703,6 +3740,8 @@ static uint32_t graphics_draw_window_char(uint32_t window_id, uint32_t x, uint32
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 66u;
     gate->opcode = LUNA_GRAPHICS_DRAW_CHAR;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -3725,6 +3764,8 @@ static uint32_t graphics_nudge_window(uint32_t window_id, int32_t dx, int32_t dy
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 69;
     gate->opcode = LUNA_GRAPHICS_MOVE_WINDOW;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -3745,6 +3786,8 @@ static uint32_t graphics_close_window(uint32_t window_id) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 70;
     gate->opcode = LUNA_GRAPHICS_CLOSE_WINDOW;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -3763,6 +3806,8 @@ static uint32_t graphics_minimize_window(uint32_t window_id) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 73;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = 0x40u;
@@ -3782,6 +3827,8 @@ static uint32_t graphics_toggle_maximize_window(uint32_t window_id) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 74;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = 0x80u;
@@ -3801,6 +3848,8 @@ static uint32_t graphics_resize_window(uint32_t window_id, int32_t dw, int32_t d
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 75;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = 0x100u;
@@ -3822,6 +3871,8 @@ static uint32_t graphics_render_desktop(uint32_t attr, uint32_t selection) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 71;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = attr;
@@ -3843,6 +3894,8 @@ static uint32_t graphics_toggle_control_center(void) {
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 76;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = g_control_open == 0u ? 0x200u : 0x400u;
@@ -3864,6 +3917,8 @@ static uint32_t graphics_render_desktop_state(uint32_t attr, uint32_t selection,
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 72;
     gate->opcode = LUNA_GRAPHICS_RENDER_DESKTOP;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->attr = attr;
@@ -4026,6 +4081,8 @@ static void device_write_bytes(const char *text, size_t size) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 54;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;
@@ -4526,6 +4583,8 @@ static void print_device_list(void) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 59;
     gate->opcode = LUNA_DEVICE_LIST;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_device_list_cid.low;
     gate->cid_high = g_device_list_cid.high;
     gate->buffer_addr = manifest->list_buffer_base;
@@ -4623,6 +4682,8 @@ static void print_lane_census(void) {
         zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
         gate->sequence = 60;
         gate->opcode = LUNA_DEVICE_CENSUS;
+        gate->caller_space = LUNA_SPACE_USER;
+        gate->actor_space = LUNA_SPACE_USER;
         gate->flags = cursor;
         gate->cid_low = g_device_list_cid.low;
         gate->cid_high = g_device_list_cid.high;
@@ -4683,6 +4744,8 @@ static void print_pci_scan(void) {
         zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
         gate->sequence = 61;
         gate->opcode = LUNA_DEVICE_PCI_SCAN;
+        gate->caller_space = LUNA_SPACE_USER;
+        gate->actor_space = LUNA_SPACE_USER;
         gate->flags = cursor;
         gate->cid_low = g_device_list_cid.low;
         gate->cid_high = g_device_list_cid.high;
@@ -5718,6 +5781,8 @@ static uint32_t graphics_query_window(
     zero_bytes((void *)(uintptr_t)manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 110u;
     gate->opcode = LUNA_GRAPHICS_QUERY_WINDOW;
+    gate->caller_space = LUNA_SPACE_USER;
+    gate->actor_space = LUNA_SPACE_USER;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
