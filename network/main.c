@@ -255,7 +255,25 @@ static uint32_t security_policy_query(uint32_t policy_type, uint64_t target_id, 
     return gate->status;
 }
 
-static void observe_log(const char *text) {
+static void copy_text_field(char *dst, size_t dst_len, const char *src) {
+    if (dst_len == 0u) {
+        return;
+    }
+    for (size_t i = 0u; i < dst_len; ++i) {
+        dst[i] = 0;
+    }
+    if (src == 0) {
+        return;
+    }
+    for (size_t i = 0u; i + 1u < dst_len; ++i) {
+        if (src[i] == '\0') {
+            break;
+        }
+        dst[i] = src[i];
+    }
+}
+
+static void observe_log_lson(const char *text, const struct luna_lson_record *lson) {
     volatile struct luna_observe_gate *gate;
     uint64_t size = 0u;
     if (g_observe_log_cid.low == 0u || text == 0) {
@@ -273,7 +291,42 @@ static void observe_log(const char *text) {
     gate->cid_low = g_observe_log_cid.low;
     gate->cid_high = g_observe_log_cid.high;
     copy_bytes((void *)gate->message, text, (size_t)size);
+    if (lson != 0) {
+        gate->buffer_addr = (uint64_t)(uintptr_t)lson;
+        gate->buffer_size = sizeof(*lson);
+    }
     ((observe_gate_fn_t)(uintptr_t)g_manifest->observe_gate_entry)((struct luna_observe_gate *)(uintptr_t)g_manifest->observe_gate_base);
+}
+
+static void observe_log(const char *text) {
+    observe_log_lson(text, 0);
+}
+
+static void observe_link_trace(const char *scope, const char *message, uint32_t session_id, uint32_t channel_id, uint64_t actor_space, uint32_t allowed) {
+    struct luna_lson_record record;
+    zero_bytes(&record, sizeof(record));
+    record.magic = LUNA_LSON_MAGIC;
+    record.version = LUNA_LSON_VERSION;
+    record.actor_low = actor_space;
+    record.trace_low = ((uint64_t)session_id << 32) | (uint64_t)channel_id;
+    record.session_low = session_id;
+    record.install_low = g_manifest->install_uuid_low;
+    record.install_high = g_manifest->install_uuid_high;
+    record.record_class = LUNA_LOG_CLASS_SYSTEM;
+    record.band = allowed != 0u ? LUNA_LOG_BAND_TRACE : LUNA_LOG_BAND_AUDIT;
+    record.space_id = LUNA_SPACE_NETWORK;
+    record.writer_space = LUNA_SPACE_NETWORK;
+    record.authority_space = LUNA_SPACE_OBSERVABILITY;
+    record.encoding = LUNA_LSON_ENCODING_FRAME;
+    record.flags = LUNA_LSON_FLAG_PERSIST;
+    if (allowed == 0u) {
+        record.flags |= LUNA_LSON_FLAG_AUDIT;
+    }
+    record.attr_count = 4u;
+    copy_text_field(record.kind, sizeof(record.kind), "link.trace");
+    copy_text_field(record.scope, sizeof(record.scope), scope);
+    copy_text_field(record.body, sizeof(record.body), message);
+    observe_log_lson(message, &record);
 }
 
 static void device_write(const char *text) {
@@ -982,12 +1035,13 @@ static uint32_t handle_open_session(struct luna_network_gate *gate) {
         0u
     ) != LUNA_GATE_OK) {
         session_slot->live = 0u;
+        observe_link_trace("session", "link.trace type=session denied", session_slot->session.session_id, 0u, gate->actor_space, 0u);
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, &session_slot->session, sizeof(session_slot->session));
     gate->size = sizeof(session_slot->session);
     gate->result_count = 1u;
-    observe_log("link.trace type=session");
+    observe_link_trace("session", "link.trace type=session", session_slot->session.session_id, 0u, gate->actor_space, 1u);
     observe_log("lunalink sess open");
     return LUNA_NETWORK_OK;
 }
@@ -1027,13 +1081,14 @@ static uint32_t handle_open_channel(struct luna_network_gate *gate) {
         0u
     ) != LUNA_GATE_OK) {
         channel_slot->live = 0u;
+        observe_link_trace("channel", "link.trace type=channel denied", channel_slot->channel.session_id, channel_slot->channel.channel_id, gate->actor_space, 0u);
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     (void)persist_state();
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, &channel_slot->channel, sizeof(channel_slot->channel));
     gate->size = sizeof(channel_slot->channel);
     gate->result_count = 1u;
-    observe_log("link.trace type=channel");
+    observe_link_trace("channel", "link.trace type=channel", channel_slot->channel.session_id, channel_slot->channel.channel_id, gate->actor_space, 1u);
     observe_log("lunalink chan open");
     return LUNA_NETWORK_OK;
 }
@@ -1046,6 +1101,7 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
     struct lunalink_packet packet;
     uint64_t total_size;
     if (validate_network_policy(LUNA_CAP_NETWORK_SEND, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_SEND_CHANNEL, gate->session_id, gate->channel_id, 0u) != LUNA_GATE_OK) {
+        observe_link_trace("send", "link.trace type=send denied", gate->session_id, gate->channel_id, gate->actor_space, 0u);
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || gate->buffer_size < sizeof(request)) {
@@ -1092,7 +1148,7 @@ static uint32_t handle_send_channel(struct luna_network_gate *gate) {
     }
     gate->size = request.payload_size;
     gate->result_count = 1u;
-    observe_log("link.trace type=send");
+    observe_link_trace("send", "link.trace type=send", session_slot->session.session_id, channel_slot->channel.channel_id, gate->actor_space, 1u);
     return LUNA_NETWORK_OK;
 }
 
@@ -1104,6 +1160,7 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
     uint32_t channel_id = gate->channel_id != 0u ? gate->channel_id : (uint32_t)gate->flags;
     uint64_t packet_size = 0u;
     if (validate_network_policy(LUNA_CAP_NETWORK_RECV, gate->cid_low, gate->cid_high, gate->caller_space, gate->actor_space, LUNA_NETWORK_RECV_CHANNEL, gate->session_id, channel_id, 0u) != LUNA_GATE_OK) {
+        observe_link_trace("recv", "link.trace type=recv denied", gate->session_id, channel_id, gate->actor_space, 0u);
         return LUNA_NETWORK_ERR_INVALID_CAP;
     }
     if (gate->buffer_addr == 0u || channel_id == 0u) {
@@ -1149,7 +1206,7 @@ static uint32_t handle_recv_channel(struct luna_network_gate *gate) {
     copy_bytes((void *)(uintptr_t)gate->buffer_addr, g_packet + sizeof(packet), packet.payload_size);
     gate->size = packet.payload_size;
     gate->result_count = 1u;
-    observe_log("link.trace type=recv");
+    observe_link_trace("recv", "link.trace type=recv", session_slot->session.session_id, channel_id, gate->actor_space, 1u);
     return LUNA_NETWORK_OK;
 }
 

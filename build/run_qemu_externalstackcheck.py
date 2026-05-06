@@ -103,6 +103,8 @@ def main() -> int:
         b"net.send luna-stack-out\r\n"
         b"net.recv\r\n"
         b"net.status\r\n"
+        b"revoke-cap network.send\r\n"
+        b"net.send denied-link\r\n"
         b"lasql.logs\r\n"
     )
     patch_session_script(commands)
@@ -195,7 +197,7 @@ def main() -> int:
                         reply_sent = True
                     except OSError:
                         pass
-                if reply_sent and "net.recv state=ready bytes=" in text:
+                if reply_sent and "lasql.logs ok" in text:
                     break
                 if proc.poll() is not None:
                     break
@@ -222,10 +224,13 @@ def main() -> int:
         "net.recv state=ready bytes=13",
         "data=luna-stack-in",
         "net.status phase=recv last=ok tx_messages=1 tx_bytes=14 rx_messages=1 rx_bytes=13",
-        "link.trace type=session",
-        "link.trace type=channel",
-        "link.trace type=send",
-        "link.trace type=recv",
+        "revoked: network.send (1)",
+        "net.send failed state=invalid_cap",
+        "link.trace type=session type=4C534F52 state=1 version=65536",
+        "link.trace type=channel type=4C534F52 state=1 version=65536",
+        "link.trace type=send type=4C534F52 state=1 version=65536",
+        "link.trace type=recv type=4C534F52 state=1 version=65536",
+        "link.trace type=send denied type=4C534F52 state=8 version=65536",
     ]
     for needle in required:
         if needle not in stdout:

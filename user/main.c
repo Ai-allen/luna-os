@@ -4201,6 +4201,10 @@ static const char *cap_name(uint64_t domain_key) {
         case LUNA_CAP_GRAPHICS_DRAW: return "graphics.draw";
         case LUNA_CAP_OBSERVE_READ: return "observe.read";
         case LUNA_CAP_OBSERVE_STATS: return "observe.stats";
+        case LUNA_CAP_NETWORK_SEND: return "network.send";
+        case LUNA_CAP_NETWORK_RECV: return "network.recv";
+        case LUNA_CAP_NETWORK_PAIR: return "network.pair";
+        case LUNA_CAP_NETWORK_SESSION: return "network.session";
         case LUNA_CAP_PROGRAM_LOAD: return "program.load";
         case LUNA_CAP_PROGRAM_START: return "program.start";
         case LUNA_CAP_SYSTEM_QUERY: return "system.query";
@@ -4532,6 +4536,10 @@ static uint64_t cap_domain_from_name(const char *text, size_t len) {
     if (len == 12u && chars_equal(text, "device.write", 12u)) return LUNA_CAP_DEVICE_WRITE;
     if (len == 12u && chars_equal(text, "observe.read", 12u)) return LUNA_CAP_OBSERVE_READ;
     if (len == 13u && chars_equal(text, "observe.stats", 13u)) return LUNA_CAP_OBSERVE_STATS;
+    if (len == 12u && chars_equal(text, "network.send", 12u)) return LUNA_CAP_NETWORK_SEND;
+    if (len == 12u && chars_equal(text, "network.recv", 12u)) return LUNA_CAP_NETWORK_RECV;
+    if (len == 12u && chars_equal(text, "network.pair", 12u)) return LUNA_CAP_NETWORK_PAIR;
+    if (len == 15u && chars_equal(text, "network.session", 15u)) return LUNA_CAP_NETWORK_SESSION;
     if (len == 12u && chars_equal(text, "program.load", 12u)) return LUNA_CAP_PROGRAM_LOAD;
     if (len == 13u && chars_equal(text, "program.start", 13u)) return LUNA_CAP_PROGRAM_START;
     return 0u;

@@ -732,6 +732,7 @@ fn object_type_label(object_type: u32) -> &'static [u8] {
         LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL => b"package-install",
         LUNA_DATA_OBJECT_TYPE_PACKAGE_INDEX => b"package-index",
         LUNA_DATA_OBJECT_TYPE_DRIVER_BIND => b"driver-bind",
+        LUNA_DATA_OBJECT_TYPE_LSON_RECORD => b"lson-record",
         USER_NOTE_OBJECT_TYPE => b"user-note",
         USER_THEME_OBJECT_TYPE => b"user-theme",
         USER_HOME_ROOT_OBJECT_TYPE => b"user-home",
