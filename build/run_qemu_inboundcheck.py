@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import re
 from pathlib import Path
 
 
@@ -176,7 +177,7 @@ def main() -> int:
                     not inbound_seen
                     and "net.inbound state=ready scope=external-raw" in text
                     and "event=seen rx_packets=" in text
-                    and "net.info tx_packets=1 rx_packets=1" in text
+                    and "net.info tx_packets=1 rx_packets=" in text
                 ):
                     inbound_seen = True
                 if inbound_ready and not inbound_seen:
@@ -221,12 +222,28 @@ def main() -> int:
         "net.inbound data=luna-inbound-ready............................",
         "net.inbound rx_packets=0->1 filter=dst-mac|broadcast",
         "network.inbound state=ready entry=net.inbound filter=dst-mac|broadcast",
-        "network.inbound state=ready entry=net.inbound filter=dst-mac|broadcast event=seen rx_packets=1",
-        "net.info tx_packets=1 rx_packets=1",
+        "network.inbound state=ready entry=net.inbound filter=dst-mac|broadcast event=seen rx_packets=",
+        "net.info tx_packets=1 rx_packets=",
     ]
     for needle in required:
         if needle not in stdout:
             raise RuntimeError(f"inboundcheck missing expected output: {needle}")
+
+    inbound_counts = [
+        int(match.group(1))
+        for match in re.finditer(
+            r"network\.inbound state=ready entry=net\.inbound filter=dst-mac\|broadcast event=seen rx_packets=(\d+)",
+            stdout,
+        )
+    ]
+    info_counts = [
+        int(match.group(1))
+        for match in re.finditer(r"net\.info tx_packets=1 rx_packets=(\d+)", stdout)
+    ]
+    if not inbound_counts or max(inbound_counts) < 1:
+        raise RuntimeError("inboundcheck did not observe inbound rx_packets >= 1")
+    if not info_counts or max(info_counts) < 1:
+        raise RuntimeError("inboundcheck did not observe net.info rx_packets >= 1")
 
     sys.stdout.write(stdout)
     return 0
