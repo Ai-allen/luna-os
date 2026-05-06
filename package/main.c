@@ -262,6 +262,7 @@ static struct luna_cid g_data_shred_cid = {0, 0};
 static struct luna_cid g_data_gather_cid = {0, 0};
 static struct luna_cid g_data_query_cid = {0, 0};
 static volatile struct luna_manifest *g_manifest = 0;
+static uint32_t g_last_draw_object_type = 0u;
 static struct luna_object_ref g_installed_apps_set = {0, 0};
 static struct luna_object_ref g_install_records_set = {0, 0};
 static struct luna_object_ref g_app_index_set = {0, 0};
@@ -271,6 +272,9 @@ static struct luna_object_ref g_update_txn_log_set = {0, 0};
 static uint64_t g_next_txn_id = 1u;
 static struct luna_object_ref g_update_txn_object = {0, 0};
 static struct luna_object_ref g_rollback_refs_set = {0, 0};
+static struct luna_object_ref g_rollback_ref_cache[LUNA_DATA_OBJECT_CAPACITY];
+static uint32_t g_rollback_ref_cache_count = 0u;
+static uint8_t g_rollback_ref_cache_valid = 0u;
 static struct luna_object_ref g_package_state_object = {0, 0};
 
 static int ensure_package_sets(void);
@@ -330,8 +334,6 @@ static int purge_stale_package_name(const char request_name[16]);
 static int audit_remove_registration(const char request_name[16]);
 static int persist_package_state(void);
 static int persist_update_txn(struct luna_package_update_txn_record *record);
-static int signer_is_trusted(uint64_t signer_id);
-static int source_is_trusted(uint64_t source_id, uint64_t signer_id);
 static int read_app_metadata_trace(struct luna_object_ref object, struct luna_app_metadata *out_meta, int trace_failures);
 static int read_app_metadata(struct luna_object_ref object, struct luna_app_metadata *out_meta);
 static uint32_t build_installed_catalog(void);
@@ -383,6 +385,49 @@ static int set_contains_ref(struct luna_object_ref set_object, struct luna_objec
     }
     for (uint32_t i = 0u; i < count; ++i) {
         if (refs[i].low == target.low && refs[i].high == target.high) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void invalidate_rollback_ref_cache(void) {
+    g_rollback_ref_cache_count = 0u;
+    g_rollback_ref_cache_valid = 0u;
+}
+
+static int load_rollback_ref_cache(void) {
+    if (g_rollback_ref_cache_valid != 0u) {
+        return 1;
+    }
+    g_rollback_ref_cache_count = 0u;
+    if (g_rollback_refs_set.low == 0u && g_rollback_refs_set.high == 0u) {
+        g_rollback_ref_cache_valid = 1u;
+        return 1;
+    }
+    if (data_gather_set(
+            g_data_gather_cid,
+            g_rollback_refs_set,
+            g_rollback_ref_cache,
+            sizeof(g_rollback_ref_cache),
+            &g_rollback_ref_cache_count
+        ) != LUNA_DATA_OK) {
+        g_rollback_ref_cache_count = 0u;
+        return 0;
+    }
+    g_rollback_ref_cache_valid = 1u;
+    return 1;
+}
+
+static int is_rollback_ref(struct luna_object_ref target) {
+    if (target.low == 0u && target.high == 0u) {
+        return 0;
+    }
+    if (!load_rollback_ref_cache()) {
+        return 0;
+    }
+    for (uint32_t i = 0u; i < g_rollback_ref_cache_count && i < LUNA_DATA_OBJECT_CAPACITY; ++i) {
+        if (g_rollback_ref_cache[i].low == target.low && g_rollback_ref_cache[i].high == target.high) {
             return 1;
         }
     }
@@ -693,31 +738,6 @@ static uint32_t security_policy_sync(uint32_t policy_type, uint64_t target_id, u
     return gate->status;
 }
 
-static uint32_t security_policy_query(uint32_t policy_type, uint64_t target_id, uint32_t *out_state, uint32_t *out_flags, uint64_t *out_binding_id) {
-    volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
-    struct luna_policy_query query;
-    zero_bytes(&query, sizeof(query));
-    query.policy_type = policy_type;
-    query.target_id = target_id;
-    zero_bytes((void *)(uintptr_t)g_manifest->security_gate_base, sizeof(struct luna_gate));
-    gate->sequence = 77;
-    gate->opcode = LUNA_GATE_POLICY_QUERY;
-    gate->caller_space = LUNA_SPACE_PACKAGE;
-    gate->buffer_addr = (uint64_t)(uintptr_t)&query;
-    gate->buffer_size = sizeof(query);
-    ((security_gate_fn_t)(uintptr_t)g_manifest->security_gate_entry)((struct luna_gate *)(uintptr_t)g_manifest->security_gate_base);
-    if (out_state != 0) {
-        *out_state = query.state;
-    }
-    if (out_flags != 0) {
-        *out_flags = query.flags;
-    }
-    if (out_binding_id != 0) {
-        *out_binding_id = query.binding_id;
-    }
-    return gate->status;
-}
-
 static uint32_t security_trust_eval_bundle(const struct luna_app_metadata *meta, const void *blob, uint64_t blob_size, struct luna_trust_eval_request *out_request) {
     volatile struct luna_gate *gate = (volatile struct luna_gate *)(uintptr_t)g_manifest->security_gate_base;
     struct luna_trust_eval_request request;
@@ -775,6 +795,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 74;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_PACKAGE;
+    gate->actor_space = LUNA_SPACE_PACKAGE;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = LUNA_DEVICE_ID_SERIAL0;
@@ -904,6 +926,7 @@ static uint32_t data_draw_span(
     gate->buffer_addr = (uint64_t)(uintptr_t)target;
     gate->buffer_size = buffer_size;
     ((data_gate_fn_t)(uintptr_t)g_manifest->data_gate_entry)((struct luna_data_gate *)(uintptr_t)g_manifest->data_gate_base);
+    g_last_draw_object_type = gate->object_type;
     *out_size = gate->size;
     if (out_content_size != 0) {
         *out_content_size = gate->content_size;
@@ -1314,7 +1337,9 @@ static int find_catalog_row_by_name(const char request_name[16], struct luna_que
     }
     for (uint32_t i = 0u; i < count; ++i) {
         if (!app_name_matches(rows[i].name, request_name) &&
-            !app_name_matches(request_name, rows[i].name)) {
+            !app_name_matches(request_name, rows[i].name) &&
+            !app_name_matches(rows[i].label, request_name) &&
+            !app_name_matches(request_name, rows[i].label)) {
             continue;
         }
         if (out_row != 0) {
@@ -1476,10 +1501,6 @@ static __attribute__((unused)) int persist_package_state(void) {
 }
 
 static int ensure_package_sets(void) {
-    struct luna_package_trusted_source_record trusted_source;
-    struct luna_package_trusted_signer_record trusted_signer;
-    struct luna_object_ref trusted_ref = {0u, 0u};
-    struct luna_object_ref signer_ref = {0u, 0u};
     if (g_data_seed_cid.low == 0u || g_data_pour_cid.low == 0u) {
         return 0;
     }
@@ -1495,14 +1516,6 @@ static int ensure_package_sets(void) {
         data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_SET, 0u, &g_app_index_set) != LUNA_DATA_OK) {
         return 0;
     }
-    if ((g_trusted_source_set.low == 0u && g_trusted_source_set.high == 0u) &&
-        data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_SET, 0u, &g_trusted_source_set) != LUNA_DATA_OK) {
-        return 0;
-    }
-    if ((g_trusted_signer_set.low == 0u && g_trusted_signer_set.high == 0u) &&
-        data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_SET, 0u, &g_trusted_signer_set) != LUNA_DATA_OK) {
-        return 0;
-    }
     if ((g_update_txn_log_set.low == 0u && g_update_txn_log_set.high == 0u) &&
         data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_SET, 0u, &g_update_txn_log_set) != LUNA_DATA_OK) {
         return 0;
@@ -1510,29 +1523,6 @@ static int ensure_package_sets(void) {
     if ((g_rollback_refs_set.low == 0u && g_rollback_refs_set.high == 0u) &&
         data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_SET, 0u, &g_rollback_refs_set) != LUNA_DATA_OK) {
         return 0;
-    }
-    if (!signer_is_trusted(0u)) {
-        zero_bytes(&trusted_signer, sizeof(trusted_signer));
-        trusted_signer.magic = LUNA_PACKAGE_TRUSTED_SIGNER_MAGIC;
-        trusted_signer.version = LUNA_PACKAGE_TRUSTED_SIGNER_VERSION;
-        trusted_signer.signer_id = 0u;
-        if (data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_TRUSTED_SIGNER, 0u, &signer_ref) != LUNA_DATA_OK ||
-            data_pour_span(g_data_pour_cid, signer_ref, 0u, &trusted_signer, sizeof(trusted_signer)) != LUNA_DATA_OK ||
-            data_set_add_member(g_data_pour_cid, g_trusted_signer_set, signer_ref) != LUNA_DATA_OK) {
-            return 0;
-        }
-    }
-    if (!source_is_trusted(0u, 0u)) {
-        zero_bytes(&trusted_source, sizeof(trusted_source));
-        trusted_source.magic = LUNA_PACKAGE_TRUSTED_SOURCE_MAGIC;
-        trusted_source.version = LUNA_PACKAGE_TRUSTED_SOURCE_VERSION;
-        trusted_source.source_id = 0u;
-        trusted_source.signer_id = 0u;
-        if (data_seed_object(g_data_seed_cid, LUNA_DATA_OBJECT_TYPE_TRUSTED_SOURCE, 0u, &trusted_ref) != LUNA_DATA_OK ||
-            data_pour_span(g_data_pour_cid, trusted_ref, 0u, &trusted_source, sizeof(trusted_source)) != LUNA_DATA_OK ||
-            data_set_add_member(g_data_pour_cid, g_trusted_source_set, trusted_ref) != LUNA_DATA_OK) {
-            return 0;
-        }
     }
     return 1;
 }
@@ -1558,127 +1548,10 @@ static __attribute__((unused)) int persist_update_txn(struct luna_package_update
     return 1;
 }
 
-static int signer_is_trusted(uint64_t signer_id) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    uint32_t count = 0u;
-    if (signer_id == 0u) {
-        return 1;
-    }
-    if (g_trusted_signer_set.low == 0u && g_trusted_signer_set.high == 0u) {
-        return 0;
-    }
-    if (data_gather_set(g_data_gather_cid, g_trusted_signer_set, refs, sizeof(refs), &count) != LUNA_DATA_OK) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < count; ++i) {
-        struct luna_package_trusted_signer_record record;
-        uint64_t size = 0u;
-        uint64_t content_size = 0u;
-        zero_bytes(&record, sizeof(record));
-        if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK) {
-            continue;
-        }
-        if (size < sizeof(record) ||
-            record.magic != LUNA_PACKAGE_TRUSTED_SIGNER_MAGIC ||
-            record.version != LUNA_PACKAGE_TRUSTED_SIGNER_VERSION) {
-            continue;
-        }
-        if (record.signer_id == signer_id) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int source_is_trusted(uint64_t source_id, uint64_t signer_id) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    uint32_t count = 0u;
-    if (source_id == 0u && signer_id == 0u) {
-        return 1;
-    }
-    if (g_trusted_source_set.low == 0u && g_trusted_source_set.high == 0u) {
-        return 0;
-    }
-    if (data_gather_set(g_data_gather_cid, g_trusted_source_set, refs, sizeof(refs), &count) != LUNA_DATA_OK) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < count; ++i) {
-        struct luna_package_trusted_source_record record;
-        uint64_t size = 0u;
-        uint64_t content_size = 0u;
-        zero_bytes(&record, sizeof(record));
-        if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK) {
-            continue;
-        }
-        if (size < sizeof(record) ||
-            record.magic != LUNA_PACKAGE_TRUSTED_SOURCE_MAGIC ||
-            record.version != LUNA_PACKAGE_TRUSTED_SOURCE_VERSION) {
-            continue;
-        }
-        if (record.source_id == source_id && record.signer_id == signer_id) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int sync_signer_policies(void) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    uint32_t count = 0u;
-    if (g_trusted_signer_set.low == 0u && g_trusted_signer_set.high == 0u) {
-        return 1;
-    }
-    if (data_gather_set(g_data_gather_cid, g_trusted_signer_set, refs, sizeof(refs), &count) != LUNA_DATA_OK) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < count; ++i) {
-        struct luna_package_trusted_signer_record record;
-        uint64_t size = 0u;
-        uint64_t content_size = 0u;
-        zero_bytes(&record, sizeof(record));
-        if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK ||
-            size < sizeof(record) ||
-            record.magic != LUNA_PACKAGE_TRUSTED_SIGNER_MAGIC ||
-            record.version != LUNA_PACKAGE_TRUSTED_SIGNER_VERSION) {
-            continue;
-        }
-        if (security_policy_sync(LUNA_POLICY_TYPE_SIGNER, record.signer_id, LUNA_POLICY_STATE_ALLOW, record.flags, 0u) != LUNA_GATE_OK) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int sync_source_policies(void) {
-    struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
-    uint32_t count = 0u;
-    if (g_trusted_source_set.low == 0u && g_trusted_source_set.high == 0u) {
-        return 1;
-    }
-    if (data_gather_set(g_data_gather_cid, g_trusted_source_set, refs, sizeof(refs), &count) != LUNA_DATA_OK) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < count; ++i) {
-        struct luna_package_trusted_source_record record;
-        uint64_t size = 0u;
-        uint64_t content_size = 0u;
-        zero_bytes(&record, sizeof(record));
-        if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK ||
-            size < sizeof(record) ||
-            record.magic != LUNA_PACKAGE_TRUSTED_SOURCE_MAGIC ||
-            record.version != LUNA_PACKAGE_TRUSTED_SOURCE_VERSION) {
-            continue;
-        }
-        if (security_policy_sync(LUNA_POLICY_TYPE_SOURCE, record.source_id, LUNA_POLICY_STATE_ALLOW, record.flags, record.signer_id) != LUNA_GATE_OK) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static int clear_rollback_refs(void) {
     struct luna_object_ref refs[LUNA_DATA_OBJECT_CAPACITY];
     uint32_t count = 0u;
+    invalidate_rollback_ref_cache();
     if (g_rollback_refs_set.low == 0u && g_rollback_refs_set.high == 0u) {
         return 1;
     }
@@ -1690,6 +1563,7 @@ static int clear_rollback_refs(void) {
             return 0;
         }
     }
+    invalidate_rollback_ref_cache();
     return 1;
 }
 
@@ -1713,6 +1587,7 @@ static __attribute__((unused)) int stage_rollback_refs(
         data_set_add_member(g_data_pour_cid, g_rollback_refs_set, old_index) != LUNA_DATA_OK) {
         return 0;
     }
+    invalidate_rollback_ref_cache();
     return 1;
 }
 
@@ -1802,6 +1677,12 @@ static int read_app_metadata_trace(struct luna_object_ref object, struct luna_ap
         }
         return 0;
     }
+    if (g_last_draw_object_type != LUNA_DATA_OBJECT_TYPE_LUNA_APP) {
+        if (trace_failures) {
+            device_write("[PACKAGE] meta type mismatch\r\n");
+        }
+        return 0;
+    }
     if (content_size > sizeof(g_app_metadata_blob)) {
         if (trace_failures) {
             device_write("[PACKAGE] meta too large\r\n");
@@ -1839,6 +1720,9 @@ static int find_stale_app_object_by_name(const char request_name[16], struct lun
     }
     for (uint32_t i = 0u; i < count; ++i) {
         struct luna_app_metadata meta;
+        if (is_rollback_ref(refs[i])) {
+            continue;
+        }
         if (!read_app_metadata_trace(refs[i], &meta, 0) || !app_name_matches(meta.name, request_name)) {
             continue;
         }
@@ -1867,6 +1751,9 @@ static int find_stale_install_record_by_name(
         struct luna_package_install_record record;
         uint64_t size = 0u;
         uint64_t content_size = 0u;
+        if (is_rollback_ref(refs[i])) {
+            continue;
+        }
         zero_bytes(&record, sizeof(record));
         if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK) {
             continue;
@@ -1905,6 +1792,9 @@ static int find_stale_index_record_by_name(
         struct luna_package_index_record record;
         uint64_t size = 0u;
         uint64_t content_size = 0u;
+        if (is_rollback_ref(refs[i])) {
+            continue;
+        }
         zero_bytes(&record, sizeof(record));
         if (data_draw_span(g_data_draw_cid, refs[i], 0u, &record, sizeof(record), &size, &content_size) != LUNA_DATA_OK) {
             continue;
@@ -2136,7 +2026,6 @@ static int purge_stale_package_name(const char request_name[16]) {
     while (find_stale_app_object_by_name(request_name, &ref)) {
         (void)data_set_remove_member(g_data_pour_cid, g_installed_apps_set, ref);
         if (data_shred_object(g_data_shred_cid, ref) != LUNA_DATA_OK) {
-            device_write("[PACKAGE] purge app fail\r\n");
             return 0;
         }
         zero_bytes(&ref, sizeof(ref));
@@ -2144,7 +2033,6 @@ static int purge_stale_package_name(const char request_name[16]) {
     while (find_stale_install_record_by_name(request_name, &ref, 0)) {
         (void)data_set_remove_member(g_data_pour_cid, g_install_records_set, ref);
         if (data_shred_object(g_data_shred_cid, ref) != LUNA_DATA_OK) {
-            device_write("[PACKAGE] purge install fail\r\n");
             return 0;
         }
         zero_bytes(&ref, sizeof(ref));
@@ -2152,7 +2040,6 @@ static int purge_stale_package_name(const char request_name[16]) {
     while (find_stale_index_record_by_name(request_name, &ref, 0)) {
         (void)data_set_remove_member(g_data_pour_cid, g_app_index_set, ref);
         if (data_shred_object(g_data_shred_cid, ref) != LUNA_DATA_OK) {
-            device_write("[PACKAGE] purge index fail\r\n");
             return 0;
         }
         zero_bytes(&ref, sizeof(ref));
@@ -2162,25 +2049,17 @@ static int purge_stale_package_name(const char request_name[16]) {
 
 static int audit_remove_registration(const char request_name[16]) {
     if (find_stale_app_object_by_name(request_name, 0)) {
-        device_write("[PACKAGE] remove data present\r\n");
         return 0;
     }
-    device_write("[PACKAGE] remove data clear\r\n");
     if (find_install_record_by_name(request_name, 0, 0) || find_stale_install_record_by_name(request_name, 0, 0)) {
-        device_write("[PACKAGE] remove install present\r\n");
         return 0;
     }
-    device_write("[PACKAGE] remove installed set clear\r\n");
     if (find_index_record_by_name(request_name, 0, 0) || find_stale_index_record_by_name(request_name, 0, 0)) {
-        device_write("[PACKAGE] remove index present\r\n");
         return 0;
     }
-    device_write("[PACKAGE] remove index clear\r\n");
     if (catalog_contains_name(request_name)) {
-        device_write("[PACKAGE] remove catalog present\r\n");
         return 0;
     }
-    device_write("[PACKAGE] remove catalog clear\r\n");
     return 1;
 }
 
@@ -2535,9 +2414,6 @@ void SYSV_ABI package_entry_boot(const struct luna_bootview *bootview) {
     if (install_record_raw == 0u) {
         device_write("[PACKAGE] install set empty\r\n");
     }
-    device_write("[PACKAGE] policy sync\r\n");
-    (void)sync_signer_policies();
-    (void)sync_source_policies();
     device_write("[PACKAGE] boot done\r\n");
 }
 
@@ -2567,6 +2443,7 @@ void SYSV_ABI package_entry_gate(struct luna_package_gate *gate) {
         if (validate_capability(LUNA_CAP_PACKAGE_INSTALL, gate->cid_low, gate->cid_high, LUNA_PACKAGE_REMOVE) != LUNA_GATE_OK) {
             return;
         }
+        invalidate_rollback_ref_cache();
         device_write("audit package.remove start\r\n");
         if (!find_index_record_by_name(gate->name, &index_ref, &index_record)) {
             if (!rebuild_package_records() || !find_index_record_by_name(gate->name, &index_ref, &index_record)) {

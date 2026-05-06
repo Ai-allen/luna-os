@@ -253,7 +253,7 @@ def main() -> int:
             "audit package.remove persisted=DATA authority=PACKAGE",
             "audit package.install approved=SECURITY",
             "audit package.install persisted=DATA authority=PACKAGE",
-            "audit update.apply approved=SECURITY",
+            "audit update.apply committed=UPDATE",
             "audit update.apply activation=COMMITTED",
             "update.apply ok",
             "update.result state=committed current=1 target=2",

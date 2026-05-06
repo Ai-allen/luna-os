@@ -283,6 +283,8 @@ static void device_write(const char *text) {
     }
     gate->sequence = 44;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_UPDATE;
+    gate->actor_space = LUNA_SPACE_UPDATE;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = 1u;
@@ -297,6 +299,8 @@ static uint32_t device_read_sector(uint32_t lba, void *buffer) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 44;
     gate->opcode = LUNA_DEVICE_BLOCK_READ;
+    gate->caller_space = LUNA_SPACE_UPDATE;
+    gate->actor_space = LUNA_SPACE_UPDATE;
     gate->device_id = LUNA_DEVICE_ID_DISK0;
     gate->flags = lba;
     gate->cid_low = g_device_read_cid.low;
@@ -313,6 +317,8 @@ static uint32_t device_write_sector(uint32_t lba, const void *buffer) {
     zero_bytes((void *)(uintptr_t)g_manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 45;
     gate->opcode = LUNA_DEVICE_BLOCK_WRITE;
+    gate->caller_space = LUNA_SPACE_UPDATE;
+    gate->actor_space = LUNA_SPACE_UPDATE;
     gate->device_id = LUNA_DEVICE_ID_DISK0;
     gate->flags = lba;
     gate->cid_low = g_device_write_cid.low;
@@ -1043,7 +1049,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
                 committed_txn.target_version == target_version) {
                 g_package_state.update_txn_object = g_latest_txn_ref;
                 (void)persist_package_state();
-                device_write("audit update.apply approved=SECURITY\r\n");
+                device_write("audit update.apply committed=UPDATE\r\n");
                 device_write("audit update.apply activation=COMMITTED\r\n");
                 gate->current_version = committed_txn.current_version;
                 gate->target_version = committed_txn.target_version;
@@ -1059,7 +1065,7 @@ void SYSV_ABI update_entry_gate(struct luna_update_gate *gate) {
             gate->status = LUNA_UPDATE_OK;
             return;
         }
-        device_write("audit update.apply approved=SECURITY\r\n");
+        device_write("audit update.apply committed=UPDATE\r\n");
         device_write("audit update.apply activation=COMMITTED\r\n");
         gate->current_version = txn.current_version;
         gate->target_version = txn.target_version;

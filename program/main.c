@@ -415,6 +415,8 @@ static void device_write(const char *text) {
     zero_bytes((void *)(uintptr_t)manifest->device_gate_base, sizeof(struct luna_device_gate));
     gate->sequence = 31;
     gate->opcode = LUNA_DEVICE_WRITE;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = g_device_write_cid.low;
     gate->cid_high = g_device_write_cid.high;
     gate->device_id = 1u;
@@ -432,6 +434,8 @@ static void graphics_draw_char(uint32_t window_id, uint32_t x, uint32_t y, char 
     zero_bytes((void *)(uintptr_t)g_manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 33;
     gate->opcode = LUNA_GRAPHICS_DRAW_CHAR;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -455,6 +459,8 @@ static uint32_t graphics_create_window(struct luna_app_panel *panel) {
     zero_bytes((void *)(uintptr_t)g_manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 34;
     gate->opcode = LUNA_GRAPHICS_CREATE_WINDOW;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->x = panel->window_x;
@@ -479,6 +485,8 @@ static uint32_t graphics_set_active_window(uint32_t window_id) {
     zero_bytes((void *)(uintptr_t)g_manifest->graphics_gate_base, sizeof(struct luna_graphics_gate));
     gate->sequence = 35;
     gate->opcode = LUNA_GRAPHICS_SET_ACTIVE_WINDOW;
+    gate->caller_space = LUNA_SPACE_PROGRAM;
+    gate->actor_space = LUNA_SPACE_PROGRAM;
     gate->cid_low = g_graphics_draw_cid.low;
     gate->cid_high = g_graphics_draw_cid.high;
     gate->window_id = window_id;
@@ -805,6 +813,9 @@ static uint32_t validate_package_blob(const void *blob, uint64_t blob_size, stru
 static uint32_t package_resolve(const char name[16], struct luna_package_resolve_record *out) {
     volatile struct luna_package_gate *gate =
         (volatile struct luna_package_gate *)(uintptr_t)g_manifest->package_gate_base;
+    if (g_package_list_cid.low == 0u && g_package_list_cid.high == 0u) {
+        (void)request_capability(LUNA_CAP_PACKAGE_LIST, &g_package_list_cid);
+    }
     zero_bytes(out, sizeof(*out));
     zero_bytes((void *)(uintptr_t)g_manifest->package_gate_base, sizeof(struct luna_package_gate));
     gate->sequence = 39;
@@ -839,10 +850,12 @@ static const struct luna_app_metadata *load_data_app(
     if (g_manifest == 0 ||
         g_manifest->data_buffer_base == 0u ||
         g_manifest->data_buffer_size == 0u ||
-        g_manifest->data_buffer_size > LUNA_PROGRAM_DATA_APP_BYTES ||
         app_buffer_size == 0u) {
         device_write("[PROGRAM] data buffer missing\r\n");
         return 0;
+    }
+    if (g_manifest->data_buffer_size < app_buffer_size) {
+        app_buffer_size = g_manifest->data_buffer_size;
     }
     if (header_buf_size > app_buffer_size) {
         header_buf_size = app_buffer_size;
@@ -936,7 +949,7 @@ static const struct luna_app_metadata *load_data_app(
         device_write("[PROGRAM] data validate fail\r\n");
         return 0;
     }
-    device_write("audit program.load approved=SECURITY authority=PROGRAM\r\n");
+    device_write("audit program.load verified=PROGRAM\r\n");
     device_write_hex_value("[PROGRAM] data entry=", meta.entry_offset);
     device_write("[PROGRAM] data parse ok\r\n");
     *app_base = (uint64_t)(uintptr_t)app_buffer;
