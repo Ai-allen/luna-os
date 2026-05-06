@@ -4600,7 +4600,7 @@ static void print_device_list(void) {
     ((device_gate_fn_t)(uintptr_t)manifest->device_gate_entry)(
         (struct luna_device_gate *)(uintptr_t)manifest->device_gate_base
     );
-    if (gate->status != LUNA_DEVICE_OK) {
+    if (gate->status != LUNA_DEVICE_OK || gate->result_count == 0u) {
         device_write(g_msg_devices_fail);
         return;
     }

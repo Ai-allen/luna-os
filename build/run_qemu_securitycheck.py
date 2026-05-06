@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 import time
 from pathlib import Path
@@ -11,6 +12,8 @@ IMAGE = ROOT / "lunaos.img"
 SECURITY_IMAGE = ROOT / "lunaos_securitycheck.img"
 LOG_PATH = ROOT / "qemu_securitycheck.log"
 ERR_PATH = ROOT / "qemu_securitycheck.err.log"
+BOOT_SECTOR_BYTES = 512
+SESSION_MAGIC = 0x54504353
 
 
 def find_qemu() -> str:
@@ -26,11 +29,44 @@ def find_qemu() -> str:
     raise FileNotFoundError("qemu-system-x86_64 not found. Install QEMU or add it to PATH.")
 
 
+def parse_session_layout() -> tuple[int, int, int]:
+    image_base = None
+    for line in (ROOT / "luna.ld").read_text(encoding="utf-8").splitlines():
+        parts = line.strip().split()
+        if len(parts) == 2 and parts[0] == "IMAGE_BASE":
+            image_base = int(parts[1], 16)
+        if len(parts) == 4 and parts[0] == "SCRIPT" and parts[1] == "SESSION":
+            if image_base is None:
+                raise RuntimeError("missing IMAGE_BASE entry")
+            return image_base, int(parts[2], 16), int(parts[3], 16)
+    raise RuntimeError("missing SCRIPT SESSION layout entry")
+
+
+def patch_session_script(commands: bytes) -> None:
+    image_base, script_base, script_size = parse_session_layout()
+    payload_capacity = script_size - 8
+    if len(commands) > payload_capacity:
+        raise RuntimeError("session script exceeds configured capacity")
+
+    loader_path = ROOT / "obj" / "lunaloader_stage1.bin"
+    if not loader_path.exists():
+        raise RuntimeError("missing lunaloader_stage1.bin")
+    loader_sectors = (loader_path.stat().st_size + BOOT_SECTOR_BYTES - 1) // BOOT_SECTOR_BYTES
+    stage_offset = BOOT_SECTOR_BYTES + loader_sectors * BOOT_SECTOR_BYTES
+
+    blob = bytearray(IMAGE.read_bytes())
+    offset = stage_offset + (script_base - image_base)
+    header = struct.pack("<II", SESSION_MAGIC, len(commands))
+    payload = header + commands + (b"\x00" * (script_size - len(header) - len(commands)))
+    blob[offset:offset + script_size] = payload
+    SECURITY_IMAGE.write_bytes(blob)
+
+
 def main() -> int:
     qemu = find_qemu()
     if not IMAGE.exists():
         raise FileNotFoundError(f"missing built image: {IMAGE}")
-    shutil.copyfile(IMAGE, SECURITY_IMAGE)
+    patch_session_script(b"setup.init luna audit secret\r\nlasql.logs\r\n")
 
     for path in (LOG_PATH, ERR_PATH):
         if path.exists():
@@ -49,6 +85,8 @@ def main() -> int:
         "[SECURITY] cap.highrisk negative ok",
         "audit govern denied reason=security-owned-secret",
         "[SECURITY] secret.protect negative ok",
+        "audit trust.eval denied reason=cap",
+        "[SECURITY] trust.eval negative ok",
         "audit network.policy denied reason=holder",
         "[SECURITY] network.caller negative ok",
         "audit network.policy denied reason=revoked",
@@ -74,6 +112,17 @@ def main() -> int:
         "[SECURITY] device.diskwrite derived ok",
         "[SECURITY] ready",
         "[USER] shell ready",
+        "setup.init ok: host and first user created",
+        "lasql.logs ok",
+        "crypto.secret deny scope type=4C534F52 state=8 version=65536",
+        "crypto.secret deny cap type=4C534F52 state=8 version=65536",
+        "cap.issue deny user-auth type=4C534F52 state=8 version=65536",
+        "cap.issue deny high-risk type=4C534F52 state=8 version=65536",
+        "cap.revoke deny holder type=4C534F52 state=8 version=65536",
+        "secret.protect deny type=4C534F52 state=8 version=65536",
+        "trust.eval deny cap type=4C534F52 state=8 version=65536",
+        "network.policy deny revoked type=4C534F52 state=8 version=65536",
+        "device.policy deny revoked type=4C534F52 state=8 version=65536",
     ]
     forbidden = [
         "[SECURITY] crypto.scope negative fail",
@@ -82,6 +131,7 @@ def main() -> int:
         "[SECURITY] cap.revoke holder negative fail",
         "[SECURITY] cap.highrisk negative fail",
         "[SECURITY] secret.protect negative fail",
+        "[SECURITY] trust.eval negative fail",
         "[SECURITY] network.caller negative fail",
         "[SECURITY] network.revoked negative fail",
         "[SECURITY] network.offline negative fail",
@@ -119,7 +169,7 @@ def main() -> int:
         )
 
         try:
-            deadline = time.time() + 35.0
+            deadline = time.time() + 45.0
             while time.time() < deadline:
                 if LOG_PATH.exists():
                     text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
