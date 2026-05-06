@@ -65,6 +65,10 @@ def main() -> int:
         "[SECURITY] device.recovery negative ok",
         "audit device.policy denied reason=actor",
         "[SECURITY] device.actor negative ok",
+        "[SECURITY] device.derived positive ok",
+        "audit device.policy denied reason=net-owner",
+        "[SECURITY] device.netowner negative ok",
+        "[SECURITY] device.diskwrite derived ok",
         "[SECURITY] ready",
         "[USER] shell ready",
     ]
@@ -83,6 +87,9 @@ def main() -> int:
         "[SECURITY] device.revoked negative fail",
         "[SECURITY] device.recovery negative fail",
         "[SECURITY] device.actor negative fail",
+        "[SECURITY] device.derived positive fail",
+        "[SECURITY] device.netowner negative fail",
+        "[SECURITY] device.diskwrite derived fail",
     ]
 
     with LOG_PATH.open("w", encoding="utf-8", errors="replace") as stdout_file, ERR_PATH.open(
