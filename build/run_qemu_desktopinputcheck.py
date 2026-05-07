@@ -228,6 +228,7 @@ def run_setup_boot(qemu: str, ovmf_code: str, forbidden: list[str], stderr_file)
                 "[BOOT] dawn online",
                 "[DEVICE] input path kbd=",
                 "[DEVICE] input select basis=",
+                "usb-hid=not-bound",
                 "[USER] shell ready",
                 "[USER] input lane ready",
                 "first-setup required: no hostname or user configured",

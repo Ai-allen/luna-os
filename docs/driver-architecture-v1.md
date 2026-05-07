@@ -438,7 +438,9 @@ The first implementation phase should prioritize these five driver classes:
 2. display bring-up drivers:
    `UEFI GOP` and minimum framebuffer/console projection
 3. input bring-up drivers:
-   current keyboard path plus minimum future USB-HID bring-up path
+   current keyboard path plus USB input-controller candidate evidence for the
+   future USB-HID bring-up path; `usb-hid=not-bound` remains non-support
+   evidence until a real HID keyboard driver is bound and reviewed
 4. platform discovery drivers:
    PCI / controller inventory and binding discovery
 5. baseline network drivers:

@@ -553,6 +553,7 @@ try {
     '[BOOT] dawn online',
     '[DEVICE] input path kbd=',
     '[DEVICE] input select basis=',
+    'usb-hid=not-bound',
     '[USER] shell ready',
     '[USER] input lane ready',
     'first-setup required: no hostname or user configured'

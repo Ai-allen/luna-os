@@ -467,6 +467,10 @@ $supportCellBlockers = Get-KeyValueLine -Lines $verdictText -Key 'support_cell_b
 if (-not $supportCellBlockers) {
   $supportCellBlockers = 'unknown'
 }
+$runtimeConsequence = Get-KeyValueLine -Lines $verdictText -Key 'runtime_consequence'
+if (-not $runtimeConsequence) {
+  $runtimeConsequence = 'unknown'
+}
 $physicalEvidenceStatus = Get-KeyValueLine -Lines $verdictText -Key 'physical_evidence_status'
 if (-not $physicalEvidenceStatus) {
   $physicalEvidenceStatus = $physicalEvidence.Status
@@ -490,6 +494,7 @@ $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(
   "support_cell_status=$supportCellStatus"
   "support_cell_runtime_gate=$supportCellRuntimeGate"
   "support_cell_blockers=$supportCellBlockers"
+  "runtime_consequence=$runtimeConsequence"
   "generated_utc=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 ) | Set-Content -Encoding ascii $metaPath
 

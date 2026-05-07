@@ -207,7 +207,7 @@ After `.\finalize-session.ps1` runs, the session directory must contain:
 - `firsthop-log.txt`
   - the captured log name, selected reference baseline, current split layer,
     current priority blocker, current `driver_family_delta`, evidence scope,
-    physical evidence status, and support-cell runtime gate
+    physical evidence status, support-cell runtime gate, and runtime consequence
 - `evidence-manifest.txt`
   - the physical capture log, operator notes, and machine metadata filenames
     and SHA-256 values used to decide `physical_evidence_status`
@@ -215,7 +215,7 @@ After `.\finalize-session.ps1` runs, the session directory must contain:
   - the single-file bring-up verdict for the session
   - current progress, selected healthy reference, current priority blocker,
     the resolved `storage_residual_region`, physical evidence blockers,
-    support-cell status, and the next recommended check
+    support-cell status, runtime consequence, and the next recommended check
 
 Physical evidence blockers are intentionally specific. For example,
 `operator-note-gop-result-missing`, `operator-note-keyboard-result-invalid`, or
@@ -230,6 +230,15 @@ runtime code. The expected first triage layers remain:
 - input
 - display
 - driver-family variance
+
+For input bring-up, USB controller evidence is a candidate path until a real
+USB-HID keyboard driver is bound. A captured log may include:
+
+- `[DEVICE] input select ... usb-ctrl=ready usb-hid=not-bound`
+- `[DEVICE] input usb candidate ctrl=... hid=not-bound owner=DEVICE ...`
+
+These lines are DEVICE-owned evidence for review. They do not establish a
+physical support cell by themselves.
 
 ## Current Gate
 

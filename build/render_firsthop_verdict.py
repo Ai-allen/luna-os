@@ -380,6 +380,7 @@ def render_verdict(log_path: Path, evidence_scope: str = "auto") -> str:
         f"physical_evidence_blockers={physical_evidence['blockers']}",
         f"support_cell_runtime_gate={classification['support_cell_runtime_gate']}",
         f"support_cell_blockers={classification['support_cell_blockers']}",
+        f"runtime_consequence={classification['runtime_consequence']}",
         f"support_cell_status={support_cell_status(classification, resolved_evidence_scope)}",
         f"storage_residual={classification['storage_residual']}",
         f"storage_residual_region={residual_region}",

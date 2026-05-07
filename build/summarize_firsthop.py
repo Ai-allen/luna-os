@@ -53,6 +53,8 @@ SECTION_PATTERNS = {
         "[DEVICE] input select ",
         "[DEVICE] input pci ",
         "[DEVICE] input ctrl ",
+        "[DEVICE] input usb candidate",
+        "[DEVICE] input usb pci ",
         "[VIRTKBD] ready ",
         "[VIRTKBD] pci missing",
     ),

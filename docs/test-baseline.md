@@ -41,8 +41,8 @@ verifies that the current bring-up session helpers can still generate:
 - `firsthop-verdict.txt`
 
 from the current virtualized reference logs, and that the current firsthop
-classifier still splits minimal handoff/storage/input/governance cases the way
-the bring-up tooling expects.
+classifier still splits minimal handoff/storage/input/governance cases and
+records runtime consequence the way the bring-up tooling expects.
 
 These baselines are aligned to current passing behavior and define the current
 LunaOS 1.0 gate.
@@ -340,6 +340,8 @@ Frozen current assertions:
 ### Required Current Outputs
 
 - `[DEVICE] input event src=virtio-kbd` or `[DEVICE] input event src=i8042-kbd`
+- `[DEVICE] input select ... usb-hid=not-bound` when USB input controller
+  candidate evidence is present; this is not a bound USB-HID keyboard claim
 - `[USER] input lane src=keyboard`
 - `[USER] shell accept src=keyboard`
 - `[USER] shell execute src=keyboard`

@@ -495,6 +495,7 @@ enum luna_driver_evidence_flag {
     LUNA_DRIVER_EVIDENCE_NET_READY = 1u << 8,
     LUNA_DRIVER_EVIDENCE_INSTALL_MODE = 1u << 9,
     LUNA_DRIVER_EVIDENCE_RECOVERY_MODE = 1u << 10,
+    LUNA_DRIVER_EVIDENCE_USB_INPUT_CONTROLLER = 1u << 11,
 };
 
 enum luna_driver_runtime_class {

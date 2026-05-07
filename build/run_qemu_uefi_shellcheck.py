@@ -222,6 +222,7 @@ def main() -> int:
         "[DEVICE] display pci vendor=1234 device=1111 bdf=00:01.00 class=03/00/00 hdr=00",
         "[DEVICE] input path kbd=virtio-kbd ptr=i8042-mouse virtio=ready ps2=present lane=ready",
         "[DEVICE] input select basis=virtio-kbd virtio-dev=ready virtio-ready=ready legacy=ready",
+        "usb-hid=not-bound",
         "[DEVICE] input pci vendor=1AF4 device=1052 bdf=00:03.00 class=09/00/00 hdr=00",
         "[DEVICE] net path driver=e1000e family=0000000D lane=ready",
         "[DEVICE] net select basis=e1000e-ready pci=ready live=ready",

@@ -43,6 +43,7 @@ SUPPORT_CELL_KEYS = (
     "target_support_cell",
     "support_cell_runtime_gate",
     "support_cell_blockers",
+    "runtime_consequence",
 )
 
 

@@ -56,6 +56,7 @@ def assert_summary(
     expected_physical_status: str,
     expected_support_cell_status: str,
     expected_physical_blocker: str | None = None,
+    expected_runtime_consequence: str | None = None,
     expected_delta_status: str = "aligned",
     expected_delta_layers: str = "none",
     expected_priority_blocker: str = "none",
@@ -216,6 +217,7 @@ def assert_summary(
         f"evidence_scope={expected_evidence_scope}",
         f"physical_evidence_status={expected_physical_status}",
         "support_cell_runtime_gate=",
+        "runtime_consequence=",
         f"support_cell_status={expected_support_cell_status}",
         "storage_residual_region=(none)",
         "next_action=",
@@ -223,6 +225,13 @@ def assert_summary(
     for marker in required_verdict:
         if marker not in verdict:
             raise RuntimeError(f"verdict missing {marker}: {verdict_path}")
+    if (
+        expected_runtime_consequence
+        and f"runtime_consequence={expected_runtime_consequence}" not in verdict
+    ):
+        raise RuntimeError(
+            f"verdict expected runtime_consequence={expected_runtime_consequence}: {verdict_path}"
+        )
     if expected_physical_blocker and expected_physical_blocker not in verdict:
         raise RuntimeError(
             f"verdict missing physical evidence blocker {expected_physical_blocker}: {verdict_path}"
@@ -242,6 +251,7 @@ def assert_summary(
         "driver_family_delta=",
         f"support_cell_status={expected_support_cell_status}",
         "support_cell_runtime_gate=",
+        "runtime_consequence=",
         "generated_utc=",
     )
     for marker in required_meta:
@@ -315,8 +325,10 @@ def write_physical_candidate_inputs(session_dir: Path) -> Path:
                 "[DEVICE] display select basis=gop-fb gop=ready pci=ready",
                 "[DEVICE] display pci vendor=1234 device=1111 bdf=00:01.00 class=03/00/00 hdr=00",
                 "[DEVICE] input path kbd=i8042-kbd ptr=i8042-mouse virtio=missing ps2=present lane=ready",
-                "[DEVICE] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready",
+                "[DEVICE] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready usb-ctrl=ready usb-hid=not-bound",
                 "[DEVICE] input ctrl legacy=i8042",
+                "[DEVICE] input usb candidate ctrl=xhci hid=not-bound owner=DEVICE consequence=degraded-continue",
+                "[DEVICE] input usb pci vendor=8086 device=1E31 bdf=00:14.00 class=0C/03/30 hdr=00",
                 "[DEVICE] net path driver=e1000e family=0000000D lane=ready mmio=0000000081060000",
                 "[DEVICE] net select basis=e1000e-ready pci=ready live=ready",
                 "[DEVICE] net pci vendor=8086 device=10D3 bdf=00:02.00 class=02/00/00 hdr=00",
@@ -402,6 +414,7 @@ def main() -> int:
             "physical-candidate",
             "present",
             "not-established-physical-candidate-needs-review",
+            expected_runtime_consequence="continue",
             expected_delta_status="diverged",
             expected_delta_layers="driver-family",
             expected_priority_blocker="driver-family",

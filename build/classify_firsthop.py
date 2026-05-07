@@ -46,6 +46,16 @@ def build_profile(*parts: tuple[str, str]) -> str:
     return ",".join(f"{key}={value}" for key, value in parts)
 
 
+def input_identity(
+    input_pci: str | None,
+    input_ctrl: str | None,
+    input_usb_candidate: str | None,
+    input_usb_pci: str | None,
+) -> str:
+    parts = [part for part in (input_pci or input_ctrl, input_usb_candidate, input_usb_pci) if part]
+    return " | ".join(parts) if parts else "(missing)"
+
+
 TARGET_SUPPORT_CELL = "intel-x86_64+uefi+sata-ahci+gop+keyboard"
 SUCCESS_PROGRESS = {
     "shell-ready",
@@ -92,6 +102,44 @@ def support_cell_runtime_gate(info: dict[str, str]) -> tuple[str, str]:
         blockers.append(f"split-{info['split_layer']}")
 
     return ("pass", "none") if not blockers else ("blocked", ",".join(blockers))
+
+
+def runtime_consequence(info: dict[str, str]) -> str:
+    if info["support_cell_runtime_gate"] == "pass":
+        return "continue"
+
+    blockers = {
+        blocker
+        for blocker in info.get("support_cell_blockers", "").split(",")
+        if blocker and blocker != "none"
+    }
+    split_layer = info["split_layer"]
+
+    if split_layer in {"handoff", "storage"}:
+        return "fatal-or-recovery"
+    if split_layer == "driver-governance":
+        return "governed-deny-or-recovery"
+    if split_layer == "input":
+        return "degraded-input-recovery"
+    if split_layer == "display":
+        return "degraded-display"
+
+    if blockers & {
+        "firmware-not-uefi",
+        "storage-not-ahci-runtime",
+        "storage-lane-not-ready",
+        "lsys-not-ok",
+        "native-pair-not-ok",
+        "shell-not-ready",
+    }:
+        return "fatal-or-recovery"
+    if "keyboard-not-ready" in blockers:
+        return "degraded-input-recovery"
+    if blockers & {"display-not-gop-fb", "display-not-framebuffer"}:
+        return "degraded-display"
+    if any(blocker.startswith("split-") for blocker in blockers):
+        return "review-required"
+    return "review-required"
 
 
 def parse_lane(lines: list[str], storage_line: str | None, display_line: str | None, input_line: str | None, net_line: str | None) -> tuple[str, str, str, str]:
@@ -275,6 +323,8 @@ def classify(log_path: Path) -> dict[str, str]:
     input_select_line = first_match(lines, "[DEVICE] input select ")
     input_pci = first_match(lines, "[DEVICE] input pci ")
     input_ctrl = first_match(lines, "[DEVICE] input ctrl ")
+    input_usb_candidate = first_match(lines, "[DEVICE] input usb candidate")
+    input_usb_pci = first_match(lines, "[DEVICE] input usb pci ")
     serial_line = first_match(lines, "[DEVICE] serial path")
     serial_select_line = first_match(lines, "[DEVICE] serial select ")
     serial_pci = first_match(lines, "[DEVICE] serial pci ")
@@ -325,7 +375,7 @@ def classify(log_path: Path) -> dict[str, str]:
         "storage_pci": storage_pci or "(missing)",
         "serial_pci": serial_pci or "(missing)",
         "display_pci": display_pci or "(missing)",
-        "input_identity": input_pci or input_ctrl or "(missing)",
+        "input_identity": input_identity(input_pci, input_ctrl, input_usb_candidate, input_usb_pci),
         "net_pci": net_pci or "(missing)",
         "platform_pci": platform_pci or "(missing)",
         "fwblk": fwblk,
@@ -346,6 +396,7 @@ def classify(log_path: Path) -> dict[str, str]:
     info["target_support_cell"] = TARGET_SUPPORT_CELL
     info["support_cell_runtime_gate"] = gate
     info["support_cell_blockers"] = blockers
+    info["runtime_consequence"] = runtime_consequence(info)
     return info
 
 
@@ -389,6 +440,7 @@ def summarize(log_path: Path) -> str:
         f"target_support_cell={info['target_support_cell']}",
         f"support_cell_runtime_gate={info['support_cell_runtime_gate']}",
         f"support_cell_blockers={info['support_cell_blockers']}",
+        f"runtime_consequence={info['runtime_consequence']}",
         "",
     ]
     return "\n".join(out)
