@@ -308,6 +308,8 @@ def next_action(
     if split_layer == "storage":
         return "check lsys/native pair read path, storage driver family, and low-level disk error evidence"
     if split_layer == "input":
+        if classification["usb_hid_blocker"] == "controller-driver-missing":
+            return "implement USB host-controller driver before USB enumeration, HID descriptor parsing, interrupt polling, keycode mapping, or INPUT0 delivery"
         return "check input driver family, lane readiness, and legacy vs virtio keyboard path"
     if split_layer == "display":
         return "check GOP/framebuffer readiness, display driver family, and console fallback"
@@ -378,6 +380,8 @@ def render_verdict(log_path: Path, evidence_scope: str = "auto") -> str:
         f"evidence_scope={resolved_evidence_scope}",
         f"physical_evidence_status={physical_evidence['status']}",
         f"physical_evidence_blockers={physical_evidence['blockers']}",
+        f"usb_hid_bind_state={classification['usb_hid_bind_state']}",
+        f"usb_hid_blocker={classification['usb_hid_blocker']}",
         f"support_cell_runtime_gate={classification['support_cell_runtime_gate']}",
         f"support_cell_blockers={classification['support_cell_blockers']}",
         f"runtime_consequence={classification['runtime_consequence']}",

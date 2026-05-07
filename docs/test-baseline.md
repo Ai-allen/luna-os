@@ -29,6 +29,7 @@ Current non-gating bring-up tooling sanity path:
 - `python .\build\select_firsthop_baseline.py .\build\qemu_uefi_shellcheck.log`
 - `python .\build\render_firsthop_verdict.py .\build\qemu_uefi_shellcheck.log`
 - `python .\build\run_bringup_session_smoke.py`
+- `python .\build\run_qemu_usbhidcheck.py`
 
 This host-side smoke does not move the support matrix by itself. It only
 verifies that the current bring-up session helpers can still generate:
@@ -40,9 +41,11 @@ verifies that the current bring-up session helpers can still generate:
 - `evidence-manifest.txt`
 - `firsthop-verdict.txt`
 
-from the current virtualized reference logs, and that the current firsthop
-classifier still splits minimal handoff/storage/input/governance cases and
-records runtime consequence the way the bring-up tooling expects.
+from the current virtualized reference logs. It also verifies that the current
+firsthop classifier still splits minimal handoff/storage/input/governance cases,
+records runtime consequence the way the bring-up tooling expects, and keeps USB
+controller presence separate from USB-HID keyboard readiness by compressing the
+USB-HID blocker to the specific missing layer.
 
 These baselines are aligned to current passing behavior and define the current
 LunaOS 1.0 gate.
@@ -342,6 +345,9 @@ Frozen current assertions:
 - `[DEVICE] input event src=virtio-kbd` or `[DEVICE] input event src=i8042-kbd`
 - `[DEVICE] input select ... usb-hid=not-bound` when USB input controller
   candidate evidence is present; this is not a bound USB-HID keyboard claim
+- `[DEVICE] input select ... usb-hid-blocker=controller-driver-missing` when
+  a USB input controller is present but no LunaOS USB host-controller driver is
+  bound
 - `[USER] input lane src=keyboard`
 - `[USER] shell accept src=keyboard`
 - `[USER] shell execute src=keyboard`
@@ -352,6 +358,24 @@ Frozen current assertions:
 - `[USER] input lane src=operator`
 - `[DEVICE] input event src=serial-operator`
 - `[USER] input recovery=operator-shell`
+
+### USB-HID Blocker Gate
+
+- `python .\build\run_qemu_usbhidcheck.py`
+
+This gate boots with a USB keyboard candidate and PS/2 disabled. It must show:
+
+- `usb-ctrl=ready`
+- `usb-hid=not-bound`
+- `usb-hid-blocker=controller-driver-missing`
+- `[DEVICE] input usb pci ... class=0C/03/30`
+
+It must not show:
+
+- `[DEVICE] input event src=usb-hid`
+- `[USER] input lane src=keyboard`
+- `[USER] shell accept src=keyboard`
+- `[USER] shell execute src=keyboard cmd=help`
 
 ## UEFI shellcheck Baseline
 

@@ -440,7 +440,10 @@ The first implementation phase should prioritize these five driver classes:
 3. input bring-up drivers:
    current keyboard path plus USB input-controller candidate evidence for the
    future USB-HID bring-up path; `usb-hid=not-bound` remains non-support
-   evidence until a real HID keyboard driver is bound and reviewed
+   evidence until a real HID keyboard driver is bound and reviewed; current
+   USB-HID blocker evidence is `controller-driver-missing`, before USB
+   enumeration, HID descriptor parsing, interrupt polling, keycode mapping, or
+   `INPUT0` delivery
 4. platform discovery drivers:
    PCI / controller inventory and binding discovery
 5. baseline network drivers:

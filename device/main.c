@@ -132,6 +132,8 @@ static void detect_input_pci_record(void);
 static int detect_usb_input_pci_record(void);
 static void detect_net_pci_record(void);
 static const char *flag_state_name(int value);
+static const char *usb_hid_bind_state_name(void);
+static const char *usb_hid_blocker_name(void);
 static const char *serial_selection_basis_name(void);
 static uint32_t driver_bind_lifecycle_consequence(uint32_t stage, uint32_t failure_class);
 static uint32_t driver_bind_blocker_flags(uint32_t driver_class, uint32_t driver_family, uint32_t failure_class);
@@ -259,6 +261,7 @@ static struct luna_pci_record g_usb_input_pci = {0};
 static struct luna_pci_record g_net_pci = {0};
 static struct luna_pci_record g_platform_pci = {0};
 static uint8_t g_usb_input_pci_known = 0u;
+static uint8_t g_usb_hid_keyboard_ready = 0u;
 static uint8_t g_virtio_kbd_bus = 0u;
 static uint8_t g_virtio_kbd_slot = 0u;
 static uint8_t g_virtio_kbd_function = 0u;
@@ -3037,6 +3040,20 @@ static const char *usb_input_controller_name(void) {
     }
 }
 
+static const char *usb_hid_bind_state_name(void) {
+    return g_usb_hid_keyboard_ready != 0u ? "bound" : "not-bound";
+}
+
+static const char *usb_hid_blocker_name(void) {
+    if (g_usb_hid_keyboard_ready != 0u) {
+        return "none";
+    }
+    if (!detect_usb_input_pci_record()) {
+        return "controller-missing";
+    }
+    return "controller-driver-missing";
+}
+
 static const char *net_selection_basis_name(void) {
     uint32_t family = net_driver_family();
     if (family == LUNA_LANE_DRIVER_E1000) {
@@ -3381,17 +3398,26 @@ static void serial_write_input_context(int input_ready) {
     serial_write(flag_state_name(g_ps2_controller_present != 0u));
     serial_write(" usb-ctrl=");
     serial_write(flag_state_name(usb_input_candidate));
-    serial_write(" usb-hid=not-bound");
+    serial_write(" usb-hid=");
+    serial_write(usb_hid_bind_state_name());
+    serial_write(" usb-hid-blocker=");
+    serial_write(usb_hid_blocker_name());
     serial_write("\r\n");
     if (pci_record_present(&g_input_pci)) {
         serial_write_pci_record("[DEVICE] input pci ", &g_input_pci);
-    } else {
+    } else if (g_ps2_controller_present != 0u) {
         serial_write("[DEVICE] input ctrl legacy=i8042\r\n");
+    } else {
+        serial_write("[DEVICE] input ctrl legacy=missing\r\n");
     }
     if (usb_input_candidate) {
         serial_write("[DEVICE] input usb candidate ctrl=");
         serial_write(usb_input_controller_name());
-        serial_write(" hid=not-bound owner=DEVICE consequence=degraded-continue\r\n");
+        serial_write(" hid=");
+        serial_write(usb_hid_bind_state_name());
+        serial_write(" blocker=");
+        serial_write(usb_hid_blocker_name());
+        serial_write(" owner=DEVICE consequence=degraded-continue\r\n");
         serial_write_pci_record("[DEVICE] input usb pci ", &g_usb_input_pci);
     }
 }

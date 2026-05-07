@@ -277,6 +277,7 @@ def main() -> int:
                     "[DEVICE] input path kbd=",
                     "[DEVICE] input select basis=",
                     "usb-hid=not-bound",
+                    "usb-hid-blocker=controller-missing",
                     "[USER] shell ready",
                     "[USER] input lane ready",
                     "first-setup required: no hostname or user configured",

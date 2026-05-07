@@ -89,7 +89,10 @@ def main() -> int:
                     "[BOOT] lsys super read ok",
                     "[BOOT] native pair ok",
                     "[DEVICE] input path kbd=i8042-kbd ptr=i8042-mouse virtio=missing ps2=present lane=ready",
+                    "[DEVICE] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready usb-ctrl=ready usb-hid=not-bound usb-hid-blocker=controller-driver-missing",
                     "[DEVICE] input ctrl legacy=i8042",
+                    "[DEVICE] input usb candidate ctrl=xhci hid=not-bound blocker=controller-driver-missing owner=DEVICE consequence=degraded-continue",
+                    "[DEVICE] input usb pci vendor=8086 device=1E31 bdf=00:14.00 class=0C/03/30 hdr=00",
                     "[VIRTKBD] pci missing",
                     "[USER] shell ready",
                 )
@@ -100,6 +103,35 @@ def main() -> int:
         require("input fwblk", input_ready["fwblk"], "legacy-missing-ok")
         require("input split", input_ready["split_layer"], "none")
         require("input lane", input_ready["input_lane"], "ready")
+        require("input usb hid state", input_ready["usb_hid_bind_state"], "not-bound")
+        require("input usb blocker", input_ready["usb_hid_blocker"], "controller-driver-missing")
+
+        usb_hid_blocked_path = write_case(
+            tmp,
+            "usb-hid-blocked.log",
+            "\n".join(
+                (
+                    "LunaLoader UEFI Stage 1 handoff",
+                    "[BOOT] dawn online",
+                    "[BOOT] fwblk handoff ok",
+                    "[BOOT] lsys super read ok",
+                    "[BOOT] native pair ok",
+                    "[DEVICE] input path kbd=i8042-kbd ptr=i8042-mouse virtio=missing ps2=missing lane=offline",
+                    "[DEVICE] input select basis=legacy-kbd virtio-dev=missing virtio-ready=missing legacy=missing usb-ctrl=ready usb-hid=not-bound usb-hid-blocker=controller-driver-missing",
+                    "[DEVICE] input ctrl legacy=missing",
+                    "[DEVICE] input usb candidate ctrl=xhci hid=not-bound blocker=controller-driver-missing owner=DEVICE consequence=degraded-continue",
+                    "[DEVICE] input usb pci vendor=1B36 device=000D bdf=00:03.00 class=0C/03/30 hdr=00",
+                    "[USER] shell ready",
+                )
+            )
+            + "\n",
+        )
+        usb_hid_blocked = classify(usb_hid_blocked_path)
+        require("usb hid blocked split", usb_hid_blocked["split_layer"], "input")
+        require("usb hid blocked lane", usb_hid_blocked["input_lane"], "offline")
+        require("usb hid blocked state", usb_hid_blocked["usb_hid_bind_state"], "not-bound")
+        require("usb hid blocked blocker", usb_hid_blocked["usb_hid_blocker"], "controller-driver-missing")
+        require("usb hid blocked runtime", usb_hid_blocked["runtime_consequence"], "degraded-input-recovery")
 
         uefi_boot_only_path = write_case(
             tmp,

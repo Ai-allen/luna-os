@@ -192,6 +192,7 @@ def main() -> int:
         "[DEVICE] input path kbd=i8042-kbd ptr=i8042-mouse virtio=missing ps2=present lane=ready",
         "[DEVICE] input select basis=i8042 virtio-dev=missing virtio-ready=missing legacy=ready",
         "usb-hid=not-bound",
+        "usb-hid-blocker=controller-missing",
         "[DEVICE] input ctrl legacy=i8042",
         "[DEVICE] net path driver=e1000 family=0000000B lane=ready",
         "[DEVICE] net select basis=e1000-ready pci=ready live=ready",

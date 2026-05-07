@@ -479,6 +479,14 @@ $physicalEvidenceBlockers = Get-KeyValueLine -Lines $verdictText -Key 'physical_
 if (-not $physicalEvidenceBlockers) {
   $physicalEvidenceBlockers = $physicalEvidence.Blockers
 }
+$usbHidBindState = Get-KeyValueLine -Lines $verdictText -Key 'usb_hid_bind_state'
+if (-not $usbHidBindState) {
+  $usbHidBindState = 'unknown'
+}
+$usbHidBlocker = Get-KeyValueLine -Lines $verdictText -Key 'usb_hid_blocker'
+if (-not $usbHidBlocker) {
+  $usbHidBlocker = 'unknown'
+}
 $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(missing)' }
 
 @(
@@ -487,6 +495,8 @@ $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(
   "evidence_scope=$resolvedEvidenceScope"
   "physical_evidence_status=$physicalEvidenceStatus"
   "physical_evidence_blockers=$physicalEvidenceBlockers"
+  "usb_hid_bind_state=$usbHidBindState"
+  "usb_hid_blocker=$usbHidBlocker"
   "firmware=$firmware"
   "split_layer=$splitLayer"
   "priority_blocker=$priorityBlocker"

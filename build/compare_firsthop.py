@@ -16,6 +16,8 @@ IDENTITY_KEYS = (
     "serial_pci",
     "display_pci",
     "input_identity",
+    "usb_hid_bind_state",
+    "usb_hid_blocker",
     "net_pci",
     "platform_pci",
 )
@@ -91,7 +93,7 @@ def changed_layers(reference: dict[str, str], actual: dict[str, str]) -> str:
         add("input")
     if reference["driver_governance"] != actual["driver_governance"]:
         add("driver-governance")
-    if any(reference[key] != actual[key] for key in ("driver_profile", "selection_profile", "storage_pci", "serial_pci", "display_pci", "input_identity", "net_pci", "platform_pci")):
+    if any(reference[key] != actual[key] for key in ("driver_profile", "selection_profile", "storage_pci", "serial_pci", "display_pci", "input_identity", "usb_hid_bind_state", "usb_hid_blocker", "net_pci", "platform_pci")):
         add("driver-family")
     if reference["progress"] != actual["progress"]:
         add("progress")
@@ -126,6 +128,8 @@ def choose_priority_blocker(reference: dict[str, str], actual: dict[str, str], d
                     "serial_pci",
                     "display_pci",
                     "input_identity",
+                    "usb_hid_bind_state",
+                    "usb_hid_blocker",
                     "net_pci",
                     "platform_pci",
                 )

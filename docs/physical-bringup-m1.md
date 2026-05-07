@@ -235,10 +235,16 @@ For input bring-up, USB controller evidence is a candidate path until a real
 USB-HID keyboard driver is bound. A captured log may include:
 
 - `[DEVICE] input select ... usb-ctrl=ready usb-hid=not-bound`
-- `[DEVICE] input usb candidate ctrl=... hid=not-bound owner=DEVICE ...`
+- `[DEVICE] input select ... usb-hid-blocker=controller-driver-missing`
+- `[DEVICE] input usb candidate ctrl=... hid=not-bound blocker=... owner=DEVICE ...`
 
 These lines are DEVICE-owned evidence for review. They do not establish a
 physical support cell by themselves.
+
+The current USB-HID bring-up blocker is `controller-driver-missing`: LunaOS can
+identify a USB input controller, but it does not yet bind an xHCI/EHCI/OHCI/UHCI
+host-controller driver, enumerate USB devices, parse HID descriptors, poll an
+interrupt endpoint, map HID keycodes, or deliver USB-HID events into `INPUT0`.
 
 ## Current Gate
 

@@ -42,6 +42,15 @@ def parse_driver(line: str | None, key: str) -> str:
     return match.group(1)
 
 
+def parse_optional_value(line: str | None, key: str, default: str = "(missing)") -> str:
+    if not line:
+        return default
+    match = re.search(rf"{re.escape(key)}=([^ ]+)", line)
+    if not match:
+        return default
+    return match.group(1)
+
+
 def build_profile(*parts: tuple[str, str]) -> str:
     return ",".join(f"{key}={value}" for key, value in parts)
 
@@ -54,6 +63,19 @@ def input_identity(
 ) -> str:
     parts = [part for part in (input_pci or input_ctrl, input_usb_candidate, input_usb_pci) if part]
     return " | ".join(parts) if parts else "(missing)"
+
+
+def usb_hid_blocker(input_select: str | None, input_usb_candidate: str | None) -> str:
+    blocker = parse_optional_value(input_select, "usb-hid-blocker")
+    if blocker != "(missing)":
+        return blocker
+    blocker = parse_optional_value(input_usb_candidate, "blocker")
+    if blocker != "(missing)":
+        return blocker
+    state = parse_optional_value(input_select, "usb-hid")
+    if state == "bound":
+        return "none"
+    return "(missing)"
 
 
 TARGET_SUPPORT_CELL = "intel-x86_64+uefi+sata-ahci+gop+keyboard"
@@ -163,6 +185,8 @@ def parse_lane(lines: list[str], storage_line: str | None, display_line: str | N
     if input_line:
         if "lane=ready" in input_line:
             input_lane = "ready"
+        elif "lane=offline" in input_line:
+            input_lane = "offline"
         else:
             input_lane = "present"
 
@@ -376,6 +400,8 @@ def classify(log_path: Path) -> dict[str, str]:
         "serial_pci": serial_pci or "(missing)",
         "display_pci": display_pci or "(missing)",
         "input_identity": input_identity(input_pci, input_ctrl, input_usb_candidate, input_usb_pci),
+        "usb_hid_bind_state": parse_optional_value(input_select_line, "usb-hid"),
+        "usb_hid_blocker": usb_hid_blocker(input_select_line, input_usb_candidate),
         "net_pci": net_pci or "(missing)",
         "platform_pci": platform_pci or "(missing)",
         "fwblk": fwblk,
@@ -415,6 +441,8 @@ def summarize(log_path: Path) -> str:
         f"serial_pci={info['serial_pci']}",
         f"display_pci={info['display_pci']}",
         f"input_identity={info['input_identity']}",
+        f"usb_hid_bind_state={info['usb_hid_bind_state']}",
+        f"usb_hid_blocker={info['usb_hid_blocker']}",
         f"net_pci={info['net_pci']}",
         f"platform_pci={info['platform_pci']}",
         "",
