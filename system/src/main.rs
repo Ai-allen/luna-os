@@ -115,6 +115,7 @@ const GPT_ENTRY_COUNT: usize = 128;
 const GPT_ENTRY_SIZE: usize = 128;
 const GPT_ENTRIES_SECTORS: u64 = 32;
 const INSTALLER_CAP_USES: u32 = 65535;
+const SYSTEM_GPT_SKELETON_IDENTITY: &[u8] = b"LunaOS 1.0 GPT skeleton";
 
 #[repr(C)]
 pub struct LunaSystemGate {
@@ -1320,7 +1321,13 @@ fn run_installer_apply(bootview: &LunaBootView) -> bool {
     log_write(b"[INSTALLER] writer identity ok\r\n", bootview);
 
     let mut mbr = [0u8; DISK_SECTOR_SIZE];
-    unsafe { copy_nonoverlapping(b"LunaOS GPT skeleton".as_ptr(), mbr.as_mut_ptr(), 20); }
+    unsafe {
+        copy_nonoverlapping(
+            SYSTEM_GPT_SKELETON_IDENTITY.as_ptr(),
+            mbr.as_mut_ptr(),
+            SYSTEM_GPT_SKELETON_IDENTITY.len(),
+        );
+    }
     mbr[446] = 0x00;
     mbr[450] = 0xEE;
     write_u32_le(&mut mbr, 454, 1);
