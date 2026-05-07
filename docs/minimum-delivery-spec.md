@@ -2,16 +2,15 @@
 
 ## Scope
 
-This document defines the frozen release-candidate delivery baseline for
-LunaOS.
+This document defines the frozen LunaOS 1.0 delivery baseline.
 
-As of `2026-04-10`, LunaOS is treated as `RC3` rather than a prototype-only
-system. Every item below is anchored to the currently accepted RC3 behavior and
-the currently accepted RC3 freeze baseline.
+The current formal system version is `LunaOS 1.0`. The `RC3` references in this
+document are historical freeze-basis references from `2026-04-10`, not the
+current LunaOS system version.
 
-## RC Delivery Promise
+## LunaOS 1.0 Delivery Promise
 
-The current RC3 promise includes:
+The current LunaOS 1.0 promise includes:
 
 - BIOS boot into the LunaOS shell
 - first setup, login, home, and settings entry
@@ -25,15 +24,15 @@ The current RC3 promise includes:
 - a minimal external network stack default path through `net.status`,
   `net.connect`, `net.send`, and `net.recv`
 
-The current RC3 promise explicitly excludes:
+The current LunaOS 1.0 promise explicitly excludes:
 
 - protocol expansion beyond the current minimal external message path
 - generalized multi-peer or multi-channel networking behavior
 - any broader update orchestration beyond the current minimal `apply` closure
 
-## RC Freeze Baseline
+## LunaOS 1.0 Baseline
 
-The current frozen RC3 baseline is:
+The current LunaOS 1.0 baseline is:
 
 - `python .\build\build.py`
 - `pwsh -NoProfile -File .\build\run_qemu_bootcheck.ps1`
@@ -47,7 +46,7 @@ The current frozen RC3 baseline is:
 - `python .\build\run_qemu_updateapplycheck.py`
 - `python .\build\run_qemu_fullregression.py`
 
-These passing results define the current release-candidate freeze gate.
+These passing results define the current LunaOS 1.0 gate.
 `run_vmware_desktopcheck.ps1` remains a separate host-level desktop gate.
 `run_qemu_fullregression.py` remains the QEMU-only aggregate gate.
 
@@ -96,7 +95,7 @@ These passing results define the current release-candidate freeze gate.
 - After `setup.init <hostname> <username> <password>`, the system must log the
   first user in automatically.
 - Desktop session must be reachable through `desktop.boot`.
-- Shell commands verified by the frozen RC baseline:
+- Shell commands verified by the frozen LunaOS 1.0 baseline:
   - `setup.status`
   - `setup.init <hostname> <username> <password>`
   - `whoami`
@@ -141,24 +140,24 @@ These passing results define the current release-candidate freeze gate.
   - `package.remove sample`
   - `list-apps` no longer includes `sample.luna`
   - `run sample` returns `launch failed`
-- The current RC success path no longer depends on:
+- The current LunaOS 1.0 success path no longer depends on:
   - a `sample/sample.luna -> console.luna` remap
   - `PROGRAM` embedded fallback
 - `PROGRAM` embedded fallback is still retained as a damage fallback, but it is
-  not part of the frozen RC success baseline.
+  not part of the frozen LunaOS 1.0 success baseline.
 - `PACKAGE` install/index fallback branches still exist in code, but they are
-  not part of the current RC success baseline.
+  not part of the current LunaOS 1.0 success baseline.
 
 ## Data Main Path
 
 - `DATA` must come online as `LAFS`.
 - Current verified store state:
-  - `lafs.version: 2`
+  - `lafs.version: 3`
   - `lafs.objects: 34`
   - `lafs.state: clean`
   - `lafs.mounts: 1`
   - `lafs.formats: 1`
-  - `lafs.nonce: 88`
+  - `lafs.nonce: 97`
   - `lafs.health: ok`
   - `lafs.invalid: 0`
 - `PACKAGE`, policy state, installed apps, and related runtime objects are
@@ -170,7 +169,7 @@ These passing results define the current release-candidate freeze gate.
   - `update`
   - `pair`
   - `policy`
-- `settings.status` must print structured status rows that make RC boundaries
+- `settings.status` must print structured status rows that make LunaOS 1.0 boundaries
   explicit:
   - user/account and host state
   - home/document roots
@@ -181,20 +180,20 @@ These passing results define the current release-candidate freeze gate.
     default path
   - policy state
 
-## Residual RC Notes
+## Residual LunaOS 1.0 Notes
 
 The following remain intentionally recorded rather than expanded in this freeze:
 
-- `PROGRAM` embedded fallback remains in code but outside the RC success
+- `PROGRAM` embedded fallback remains in code but outside the LunaOS 1.0 success
   baseline
-- `PACKAGE` install/index fallback branches remain in code but outside the RC
+- `PACKAGE` install/index fallback branches remain in code but outside the LunaOS 1.0
   success baseline
 - pre-shell serial bring-up still exposes engineering-facing boot logs; the
   default shell/runtime surface is the frozen product surface
 
 ## Failure Contract
 
-The following are allowed and do not invalidate the current RC freeze:
+The following are allowed and do not invalidate the current LunaOS 1.0 baseline:
 
 - `list-devices` returns `failed` after `revoke-cap device.list`
 - only the current minimal external message path is promised
@@ -210,7 +209,7 @@ The following are not allowed:
 - package catalog not listing the current product apps
 - `Settings` failing to produce structured status from shell
 - `Notes`, `Guard`, `Files`, `Console`, or `Settings` failing to launch from the
-  current RC shell path
+  current LunaOS 1.0 shell path
 - developer loop not succeeding through `pack -> install -> run -> remove`
 - `update.apply` not completing the current minimal apply closure
 - `net.inbound` not completing the current minimal external inbound closure

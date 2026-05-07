@@ -2,7 +2,9 @@
 
 ## Scope
 
-This document describes the frozen RC3 baseline for LunaOS as of `2026-04-10`.
+This document describes the frozen LunaOS 1.0 baseline. The `RC3`
+`2026-04-10` freeze remains the historical release-candidate basis for this
+line, but it is not the current system version string.
 
 The current frozen gates are:
 
@@ -42,7 +44,7 @@ classifier still splits minimal handoff/storage/input/governance cases the way
 the bring-up tooling expects.
 
 These baselines are aligned to current passing behavior and define the current
-RC3 freeze.
+LunaOS 1.0 gate.
 
 Formal 15-space lock assertions:
 
@@ -57,8 +59,9 @@ Formal 15-space lock assertions:
 ## Ecosystem v1 Gate
 
 This gate freezes the current LunaOS ecosystem contract as of `2026-04-11`.
-It is layered on top of the RC3 system baseline and must remain aligned to the
-current `.luna v2`, `.la ABI/SDK v1`, trust-chain, and audit-chain behavior.
+It is layered on top of the LunaOS 1.0 system baseline and must remain aligned
+to the current `.luna v2`, `.la ABI/SDK v1`, trust-chain, and audit-chain
+behavior.
 
 Required path:
 
@@ -139,7 +142,7 @@ Frozen current assertions:
 ## Targeted Storage Failure / Recovery Checks
 
 This focused regression path preserves current storage-rooted failure and
-activation-recovery handling without widening the primary RC3 release gate
+activation-recovery handling without widening the primary LunaOS 1.0 release gate
 list. Run it when changes touch `LSYS` / `LDAT` contract checks, activation
 state handling, storage-rooted driver classification, or the stop-before-
 `PACKAGE` / `UPDATE` / `USER` boundary.
@@ -171,13 +174,14 @@ Frozen current assertions:
 
 - Verify BIOS boot reaches shell and first-setup/login flow.
 - Verify core shell commands return stable user-facing system output.
-- Verify the current RC user, storage, package, security, update, pairing, and
-  network surfaces.
+- Verify the current LunaOS 1.0 user, storage, package, security, update,
+  pairing, and network surfaces.
 
 ### Required Current Outputs
 
 - Boot and session:
   - `[USER] shell ready`
+  - `LunaOS 1.0`
   - `first-setup required: no hostname or user configured`
   - `setup.init ok: host and first user created`
   - `login ok: session active`
@@ -187,11 +191,11 @@ Frozen current assertions:
   - after `revoke-cap device.list`: `caps: 021`
 - Store baseline:
   - `lafs.version: 3`
-  - `lafs.objects: 35`
+  - `lafs.objects: 34`
   - `lafs.state: clean`
   - `lafs.health: ok`
   - `lafs.invalid: 0`
-  - `lafs.nonce: 90`
+  - `lafs.nonce: 97`
 - Package baseline:
   - catalog includes `Settings`, `Files`, `Notes`, `Guard`, `Console`
 - Developer loop baseline:
@@ -214,9 +218,9 @@ Frozen current assertions:
   - `package.remove result=removed from Apps and launch blocked`
   - the next `list-apps` output no longer includes `sample.luna`
   - `run sample` returns `launch failed` after removal
-  - the current RC shell success path does not rely on
+  - the current LunaOS 1.0 shell success path does not rely on
     `sample -> console.luna` remapping
-  - the current RC shell success path does not rely on `PROGRAM` embedded
+  - the current LunaOS 1.0 shell success path does not rely on `PROGRAM` embedded
     fallback
 - App launch baseline:
   - `run Settings` opens the settings surface from shell
@@ -292,6 +296,7 @@ Frozen current assertions:
 - `[BOOT] dawn online`
 - `[GRAPHICS] console ready`
 - `[USER] shell ready`
+- `LunaOS 1.0`
 - `[USER] input lane ready`
 - `first-setup required: no hostname or user configured`
 - `setup.init luna dev secret`
@@ -367,6 +372,7 @@ Frozen current assertions:
   - `[BOOT] native pair ok`
 - Session baseline:
   - `[USER] shell ready`
+  - `LunaOS 1.0`
   - `first-setup required: no hostname or user configured`
   - `setup.init ok: host and first user created`
   - `login ok: session active`
@@ -384,16 +390,16 @@ Frozen current assertions:
   - `net.info driver=13 flags=19 vendor=8086 device=10D3`
   - `net.external state=ready scope=outbound-only`
 
-## RC Residual Baseline Notes
+## Residual LunaOS 1.0 Baseline Notes
 
 - `PROGRAM` embedded fallback remains in code but outside the current success
   baseline.
 - `PACKAGE` install/index fallback branches remain in code but outside the
   current success baseline.
 - broader update orchestration beyond the current minimal apply closure is not
-  part of the RC3 baseline.
+  part of the LunaOS 1.0 baseline.
 - protocol expansion beyond the current minimal external message path is not
-  part of the RC3 baseline.
+  part of the LunaOS 1.0 baseline.
 - Native Storage / Install v1 does not include richer orchestration, broader
   recovery UX, migration tooling beyond current contract, or deeper fallback
   removal.
@@ -446,8 +452,8 @@ Frozen current assertions:
 
 ## Baseline Rules
 
-- A frozen RC baseline should only assert behavior observed in current passing
-  logs.
+- A frozen LunaOS 1.0 baseline should only assert behavior observed in current
+  passing logs.
 - Default user-surface checks should prefer product-facing output rather than
   internal implementation traces.
 - Historical names, legacy app identities, obsolete numeric snapshots, and

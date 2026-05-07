@@ -177,6 +177,7 @@ def main() -> int:
 
     required = [
         "[USER] shell ready",
+        "LunaOS 1.0",
         "first-setup required: no hostname or user configured",
         "[DEVICE] fwblk source=missing target=missing",
         "[DEVICE] disk path driver=piix-ide family=0000000C chain=ahci>fwblk>ata mode=normal",

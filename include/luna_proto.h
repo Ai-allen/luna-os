@@ -26,6 +26,10 @@ static inline void *luna_memset(void *dest, int value, size_t len) {
 #define memset luna_memset
 
 #define LUNA_MANIFEST_MAGIC 0x414E554Cull
+#define LUNA_OS_VERSION_MAJOR 1u
+#define LUNA_OS_VERSION_MINOR 0u
+#define LUNA_OS_VERSION_PATCH 0u
+#define LUNA_OS_VERSION_TEXT "LunaOS 1.0"
 #define LUNA_PROTO_VERSION 0x00000250u
 #define LUNA_SESSION_SCRIPT_MAGIC 0x54504353u
 #define LUNA_PROGRAM_BUNDLE_VERSION 2u

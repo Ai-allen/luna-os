@@ -21,6 +21,13 @@ QEMU_SEND_PORT = 41101
 QEMU_RECV_PORT = 41102
 ETHERTYPE = 0x88B5
 LUNALINK_MAGIC = 0x4C4C504B
+TRACE_NEEDLES = (
+    "link.trace type=session type=4C534F52 state=1 version=65536",
+    "link.trace type=channel type=4C534F52 state=1 version=65536",
+    "link.trace type=send type=4C534F52 state=1 version=65536",
+    "link.trace type=recv type=4C534F52 state=1 version=65536",
+    "link.trace type=send denied type=4C534F52 state=8 version=65536",
+)
 
 
 def find_qemu() -> str:
@@ -176,40 +183,68 @@ def main() -> int:
         stdout_thread.start()
         stderr_thread.start()
 
+        outbound_seen = False
+        reply_sent = False
+        network_error: Exception | None = None
+        network_lock = threading.Lock()
+        stop_network = threading.Event()
+
+        def pump_network() -> None:
+            nonlocal outbound_seen, reply_sent, network_error
+            while not stop_network.is_set():
+                try:
+                    frame, _ = host_rx.recvfrom(2048)
+                    peer_id, session_id, channel_id, payload = parse_outbound_frame(frame)
+                    if payload != b"luna-stack-out":
+                        raise RuntimeError("externalstack unexpected outbound payload")
+                    reply = build_reply_frame(peer_id, session_id, channel_id, b"luna-stack-in")
+                    with network_lock:
+                        outbound_seen = True
+                    for _ in range(24):
+                        if stop_network.is_set():
+                            break
+                        host_tx.sendto(reply, ("127.0.0.1", QEMU_RECV_PORT))
+                        time.sleep(0.01)
+                    with network_lock:
+                        reply_sent = True
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                except Exception as exc:
+                    with network_lock:
+                        network_error = exc
+                    break
+
+        network_thread = threading.Thread(target=pump_network, daemon=True)
+        network_thread.start()
+
         try:
-            outbound_seen = False
-            reply_sent = False
-            deadline = time.time() + 30.0
+            deadline = time.time() + 60.0
             while time.time() < deadline:
                 with stdout_lock:
                     text = "".join(stdout_chunks)
-                if not outbound_seen and "net.send state=ready bytes=" in text:
-                    try:
-                        frame, _ = host_rx.recvfrom(2048)
-                        peer_id, session_id, channel_id, payload = parse_outbound_frame(frame)
-                        if payload != b"luna-stack-out":
-                            raise RuntimeError("externalstack unexpected outbound payload")
-                        outbound_seen = True
-                        reply = build_reply_frame(peer_id, session_id, channel_id, b"luna-stack-in")
-                        for _ in range(16):
-                            host_tx.sendto(reply, ("127.0.0.1", QEMU_RECV_PORT))
-                            time.sleep(0.01)
-                        reply_sent = True
-                    except OSError:
-                        pass
-                if reply_sent and "lasql.logs ok" in text:
+                with network_lock:
+                    error = network_error
+                if error is not None:
+                    raise error
+                if all(needle in text for needle in TRACE_NEEDLES):
                     break
                 if proc.poll() is not None:
                     break
                 time.sleep(0.02)
+            stop_network.set()
             if proc.poll() is None:
                 proc.kill()
             proc.wait(timeout=5)
+            network_thread.join(timeout=1)
             stdout_thread.join(timeout=1)
             stderr_thread.join(timeout=1)
         finally:
+            stop_network.set()
             host_rx.close()
             host_tx.close()
+            network_thread.join(timeout=1)
             if proc.poll() is None:
                 proc.kill()
 
@@ -226,15 +261,15 @@ def main() -> int:
         "net.status phase=recv last=ok tx_messages=1 tx_bytes=14 rx_messages=1 rx_bytes=13",
         "revoked: network.send (1)",
         "net.send failed state=invalid_cap",
-        "link.trace type=session type=4C534F52 state=1 version=65536",
-        "link.trace type=channel type=4C534F52 state=1 version=65536",
-        "link.trace type=send type=4C534F52 state=1 version=65536",
-        "link.trace type=recv type=4C534F52 state=1 version=65536",
-        "link.trace type=send denied type=4C534F52 state=8 version=65536",
+        *TRACE_NEEDLES,
     ]
     for needle in required:
         if needle not in stdout:
             raise RuntimeError(f"externalstackcheck missing expected output: {needle}")
+    if not outbound_seen:
+        raise RuntimeError("externalstackcheck did not observe outbound UDP frame")
+    if not reply_sent:
+        raise RuntimeError("externalstackcheck did not send inbound UDP reply")
 
     sys.stdout.write(stdout)
     return 0

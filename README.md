@@ -1,16 +1,16 @@
-# LunaOS Release Candidate
+# LunaOS 1.0
 
-LunaOS is now frozen at the third release-candidate stage.
+The current formal LunaOS system version is `LunaOS 1.0`.
 
-The current tree is no longer described as a prototype baseline. Its BIOS main
-path, desktop and shell entry, package-visible app catalog, and developer loop
-have been tightened into a release-candidate operating envelope.
+The earlier `LunaOS RC3 (2026-04-10)` freeze remains the historical
+release-candidate baseline behind the current 1.0 line. It is not the current
+system version string.
 
-## RC Freeze Status
+## LunaOS 1.0 Status
 
-Current RC recommendation: `LunaOS RC3 (2026-04-10)`.
+Current system version: `LunaOS 1.0`.
 
-This freeze records the currently accepted release-candidate contract:
+This release records the currently accepted system contract:
 
 - stable boot into LunaOS shell on the BIOS validation path
 - stable `setup -> login -> home -> settings -> install -> run -> remove`
@@ -25,7 +25,7 @@ This freeze records the currently accepted release-candidate contract:
 - default shell/runtime success paths expressed in product-facing output rather
   than `[PACKAGE]` / `[PROGRAM]` execution traces
 
-The following are explicitly outside the RC3 promise:
+The following are explicitly outside the LunaOS 1.0 promise:
 
 - protocol expansion beyond the current minimal external message path
 - more generalized multi-peer or multi-channel networking semantics
@@ -85,9 +85,9 @@ The repository expects local Windows toolchains under `toolchains/`:
 python .\build\build.py
 ```
 
-## RC3 Freeze Baseline
+## LunaOS 1.0 Validation Baseline
 
-The current frozen RC3 baseline is defined by these passing validations:
+The current LunaOS 1.0 baseline is defined by these passing validations:
 
 ```powershell
 python .\build\build.py
@@ -103,7 +103,7 @@ python .\build\run_qemu_updateapplycheck.py
 python .\build\run_qemu_fullregression.py
 ```
 
-These passing results define the current RC3 freeze baseline across BIOS,
+These passing results define the current LunaOS 1.0 baseline across BIOS,
 desktop, VMware UEFI desktop cross-check, update apply, external inbound,
 external stack, UEFI shell/stability, and full regression.
 `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1` is a separate
@@ -118,7 +118,7 @@ The current formal minimal developer example is:
 python .\tools\luna_pack.py .\tools\luna_manifest.minimal.json .\build\obj\console_app.bin .\build\devloop_sample.luna
 ```
 
-The current RC developer loop is:
+The current LunaOS 1.0 developer loop is:
 
 - pack a `.luna` bundle on the host
 - install with `package.install sample`
@@ -127,16 +127,16 @@ The current RC developer loop is:
 - remove with `package.remove sample`
 - verify the catalog no longer exposes `sample.luna`
 
-This RC success path no longer depends on:
+This LunaOS 1.0 success path no longer depends on:
 
 - `sample/sample.luna -> console.luna` remapping
 - `PROGRAM` embedded fallback
 
 `PROGRAM` embedded fallback is still retained in code as a damage fallback, but
-it is outside the frozen RC3 success baseline.
+it is outside the frozen LunaOS 1.0 success baseline.
 
 `PACKAGE` install/index fallback is still retained in code as a damage
-fallback, but it is outside the frozen RC3 success baseline.
+fallback, but it is outside the frozen LunaOS 1.0 success baseline.
 
 ## Ecosystem Developer Entry
 

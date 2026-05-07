@@ -1,4 +1,4 @@
-# LunaOS v2.0 full constellation image layout
+# LunaOS 1.0 full constellation image layout
 # Formal runtime is frozen to 15 spaces. Auxiliary debug/test payloads must
 # never appear as SPACE or STACK records in the release profile.
 IMAGE_BASE 0x200000

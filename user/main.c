@@ -7140,6 +7140,8 @@ void SYSV_ABI user_entry_boot(const struct luna_bootview *bootview) {
     drain_pointer_noise(64u);
     serial_write_debug("[USERDBG] drain ok\r\n");
     device_write(g_msg_shell_ready);
+    device_write(LUNA_OS_VERSION_TEXT);
+    device_write(g_msg_newline);
     device_write(g_msg_input_lane);
     if (g_user_setup_required != 0u) {
         device_write(g_msg_setup_required);

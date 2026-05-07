@@ -1,3 +1,7 @@
+pub const LUNA_OS_VERSION_MAJOR: u32 = 1;
+pub const LUNA_OS_VERSION_MINOR: u32 = 0;
+pub const LUNA_OS_VERSION_PATCH: u32 = 0;
+pub const LUNA_OS_VERSION_TEXT: &str = "LunaOS 1.0";
 pub const LUNA_FORMAL_SPACE_COUNT: usize = 15;
 
 #[repr(C)]

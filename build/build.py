@@ -31,6 +31,13 @@ LUNA_ACTIVATION_ACTIVE = 3
 STORE_RESERVED_WORDS = 55
 OBJECT_RECORD_SIZE = 88
 
+LUNA_OS_VERSION_MAJOR = 1
+LUNA_OS_VERSION_MINOR = 0
+LUNA_OS_VERSION_PATCH = 0
+LUNA_OS_VERSION_TEXT = f"LunaOS {LUNA_OS_VERSION_MAJOR}.{LUNA_OS_VERSION_MINOR}"
+LUNA_OS_VERSION_ISO_ID = b"LUNAOS_1_0"
+LUNA_OS_INSTALLER_ISO_ID = b"LUNAOS_1_0_INSTALLER"
+
 DISK_SECTOR_SIZE = 512
 DISK_TOTAL_SECTORS = 131072
 ESP_START_LBA = 2048
@@ -280,7 +287,7 @@ def check_stage_layout(layout: dict, blobs: dict[str, bytes], app_blobs: dict[st
 
 
 def write_map(path: Path, sections: list[tuple[str, dict]]) -> None:
-    lines = ["LunaOS Constellation Map", ""]
+    lines = [f"{LUNA_OS_VERSION_TEXT} Constellation Map", ""]
     for title, labels in sections:
         lines.append(f"[{title}]")
         for name in sorted(labels):
@@ -1170,8 +1177,8 @@ def build_uefi_iso(esp_blob: bytes, efi_blob: bytes, stage_blob: bytes) -> bytes
     pvd[0] = 1
     pvd[1:6] = b"CD001"
     pvd[6] = 1
-    pvd[8:40] = b"LUNAOS".ljust(32, b" ")
-    pvd[40:72] = b"LUNAOS_INSTALLER".ljust(32, b" ")
+    pvd[8:40] = LUNA_OS_VERSION_ISO_ID.ljust(32, b" ")
+    pvd[40:72] = LUNA_OS_INSTALLER_ISO_ID.ljust(32, b" ")
     pvd[80:88] = iso_u32(total_sectors)
     pvd[120:124] = iso_u16(1)
     pvd[124:128] = iso_u16(1)
@@ -1180,10 +1187,10 @@ def build_uefi_iso(esp_blob: bytes, efi_blob: bytes, stage_blob: bytes) -> bytes
     pvd[140:144] = struct.pack("<I", l_path_lba)
     pvd[148:152] = struct.pack(">I", m_path_lba)
     pvd[156:156 + 34] = iso_dir_record(root_dir_lba, ISO_SECTOR_SIZE, 0x02, b"\x00")
-    pvd[190:318] = b"LunaOS Installer".ljust(128, b" ")
-    pvd[318:446] = b"LunaOS".ljust(128, b" ")
-    pvd[446:574] = b"LunaOS".ljust(128, b" ")
-    pvd[574:702] = b"LunaOS".ljust(128, b" ")
+    pvd[190:318] = f"{LUNA_OS_VERSION_TEXT} Installer".encode("ascii").ljust(128, b" ")
+    pvd[318:446] = LUNA_OS_VERSION_TEXT.encode("ascii").ljust(128, b" ")
+    pvd[446:574] = LUNA_OS_VERSION_TEXT.encode("ascii").ljust(128, b" ")
+    pvd[574:702] = LUNA_OS_VERSION_TEXT.encode("ascii").ljust(128, b" ")
     pvd[702:739] = b"2026032900000000\x00"
     pvd[813] = 1
     volume[pvd_lba * ISO_SECTOR_SIZE:(pvd_lba + 1) * ISO_SECTOR_SIZE] = pvd
@@ -1206,7 +1213,7 @@ def build_uefi_iso(esp_blob: bytes, efi_blob: bytes, stage_blob: bytes) -> bytes
     validation = bytearray(32)
     validation[0] = 1
     validation[1] = 0xEF
-    validation[4:28] = b"LunaOS EFI".ljust(24, b" ")
+    validation[4:28] = f"{LUNA_OS_VERSION_TEXT} EFI".encode("ascii").ljust(24, b" ")
     validation[30] = 0x55
     validation[31] = 0xAA
     checksum = 0
@@ -1287,7 +1294,7 @@ def build_gpt_disk(esp_blob: bytes, system_blob: bytes, data_blob: bytes) -> byt
     total_sectors = DISK_TOTAL_SECTORS
     disk = bytearray(total_sectors * DISK_SECTOR_SIZE)
 
-    disk[0:440] = b"LunaOS GPT skeleton".ljust(440, b"\x00")
+    disk[0:440] = f"{LUNA_OS_VERSION_TEXT} GPT skeleton".encode("ascii").ljust(440, b"\x00")
     struct.pack_into("<I", disk, 440, 0)
     struct.pack_into("<H", disk, 444, 0)
     disk[446:462] = struct.pack(
@@ -1676,6 +1683,7 @@ def main() -> None:
     ])
     validate_constellation_map(BUILD_DIR / "constellation.map")
 
+    print(f"[build] version: {LUNA_OS_VERSION_TEXT}")
     print(f"[build] image: {BUILD_DIR / 'lunaos.img'}")
     print(f"[build] uefi: {efi_dir / 'BOOTX64.EFI'}")
     print(f"[build] esp: {BUILD_DIR / 'lunaos_esp.img'}")
