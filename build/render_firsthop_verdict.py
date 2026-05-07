@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -12,6 +13,19 @@ EVIDENCE_SCOPE_VIRTUALIZED = "virtualized-prephysical"
 EVIDENCE_SCOPE_PHYSICAL = "physical-candidate"
 EVIDENCE_SCOPE_UNKNOWN = "unknown"
 TARGET_SUPPORT_CELL = "intel-x86_64+uefi+sata-ahci+gop+keyboard"
+EVIDENCE_MANIFEST_NAME = "evidence-manifest.txt"
+EVIDENCE_MANIFEST_SCHEMA = "physical-evidence-v1"
+REQUIRED_PHYSICAL_MANIFEST_KEYS = (
+    "schema",
+    "target_support_cell",
+    "evidence_scope",
+    "capture_log",
+    "capture_log_sha256",
+    "operator_notes",
+    "operator_notes_sha256",
+    "machine",
+    "machine_sha256",
+)
 
 VIRTUALIZED_LOG_MARKERS = ("qemu", "vmware")
 PHYSICAL_SESSION_MARKER = "/artifacts/physical_bringup/"
@@ -76,6 +90,96 @@ def blocker_key(key: str) -> str:
     return key.replace("_", "-")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest_file_blockers(
+    session_dir: Path,
+    values: dict[str, str],
+    filename_key: str,
+    hash_key: str,
+    expected_name: str,
+) -> list[str]:
+    blockers: list[str] = []
+    filename = values.get(filename_key, "").strip()
+    expected_blocker = blocker_key(filename_key)
+    if not filename:
+        return [f"evidence-manifest-{expected_blocker}-missing"]
+    if filename != expected_name:
+        blockers.append(f"evidence-manifest-{expected_blocker}-mismatch")
+    file_path = session_dir / filename
+    if filename != Path(filename).name:
+        blockers.append(f"evidence-manifest-{expected_blocker}-path-invalid")
+        return blockers
+    if not file_path.exists() or not file_path.is_file():
+        blockers.append(f"evidence-manifest-{expected_blocker}-file-missing")
+        return blockers
+    expected_hash = values.get(hash_key, "").strip().lower()
+    if not expected_hash:
+        blockers.append(f"evidence-manifest-{blocker_key(hash_key)}-missing")
+    else:
+        try:
+            actual_hash = sha256_file(file_path)
+        except OSError:
+            actual_hash = ""
+        if actual_hash != expected_hash:
+            blockers.append(f"evidence-manifest-{blocker_key(hash_key)}-mismatch")
+    return blockers
+
+
+def physical_manifest_blockers(session_dir: Path, log_path: Path) -> list[str]:
+    manifest_text = read_optional_text(session_dir / EVIDENCE_MANIFEST_NAME)
+    if manifest_text is None:
+        return ["evidence-manifest-missing"]
+
+    values = parse_key_values(manifest_text)
+    blockers: list[str] = []
+    for key in REQUIRED_PHYSICAL_MANIFEST_KEYS:
+        if not values.get(key, "").strip():
+            blockers.append(f"evidence-manifest-{blocker_key(key)}-missing")
+
+    if values.get("schema") and values["schema"] != EVIDENCE_MANIFEST_SCHEMA:
+        blockers.append("evidence-manifest-schema-invalid")
+    if values.get("target_support_cell") and values["target_support_cell"] != TARGET_SUPPORT_CELL:
+        blockers.append("evidence-manifest-target-support-cell-mismatch")
+    if values.get("evidence_scope") and values["evidence_scope"] != EVIDENCE_SCOPE_PHYSICAL:
+        blockers.append("evidence-manifest-evidence-scope-mismatch")
+
+    blockers.extend(
+        manifest_file_blockers(
+            session_dir,
+            values,
+            "capture_log",
+            "capture_log_sha256",
+            log_path.name,
+        )
+    )
+    blockers.extend(
+        manifest_file_blockers(
+            session_dir,
+            values,
+            "operator_notes",
+            "operator_notes_sha256",
+            "operator-notes.txt",
+        )
+    )
+    blockers.extend(
+        manifest_file_blockers(
+            session_dir,
+            values,
+            "machine",
+            "machine_sha256",
+            "machine.txt",
+        )
+    )
+    return list(dict.fromkeys(blockers))
+
+
 def physical_note_blockers(session_dir: Path) -> list[str]:
     notes = read_optional_text(session_dir / "operator-notes.txt")
     if notes is None:
@@ -128,6 +232,7 @@ def physical_evidence_chain(log_path: Path) -> dict[str, str]:
             blockers.append("physical-scope-metadata-missing")
 
     blockers.extend(physical_note_blockers(session_dir))
+    blockers.extend(physical_manifest_blockers(session_dir, log_path))
 
     return {
         "status": "present" if not blockers else "missing",

@@ -37,6 +37,7 @@ verifies that the current bring-up session helpers can still generate:
 - `firsthop-classification.txt`
 - `firsthop-reference.txt`
 - `firsthop-delta.txt`
+- `evidence-manifest.txt`
 - `firsthop-verdict.txt`
 
 from the current virtualized reference logs, and that the current firsthop

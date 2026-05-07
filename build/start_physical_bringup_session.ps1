@@ -26,6 +26,7 @@ $classificationPath = Join-Path $sessionDir 'firsthop-classification.txt'
 $referencePath = Join-Path $sessionDir 'firsthop-reference.txt'
 $deltaPath = Join-Path $sessionDir 'firsthop-delta.txt'
 $verdictPath = Join-Path $sessionDir 'firsthop-verdict.txt'
+$manifestPath = Join-Path $sessionDir 'evidence-manifest.txt'
 
 $hashTargets = @($imagePath, $isoPath, $bootx64Path) | Where-Object { Test-Path $_ }
 if ($hashTargets.Count -gt 0) {
@@ -100,6 +101,12 @@ if ($hashTargets.Count -gt 0) {
   'Awaiting firsthop verdict.'
   'Run .\finalize-session.ps1 after placing serial-capture.log in this directory.'
 ) | Set-Content -Encoding ascii $verdictPath
+
+@(
+  'Awaiting physical evidence manifest.'
+  'Run .\finalize-session.ps1 after placing the physical capture log in this directory.'
+  'The final manifest records capture log, operator notes, and machine metadata hashes.'
+) | Set-Content -Encoding ascii $manifestPath
 
 @(
   'param([string]$LogPath = (Join-Path $PSScriptRoot ''serial-capture.log''))'

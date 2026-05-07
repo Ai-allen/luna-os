@@ -110,9 +110,10 @@ When reporting support status:
   must show `evidence_scope=physical-candidate` and
   `physical_evidence_status=present`
 - `physical_evidence_status=present` requires a non-virtualized log path,
-  target-cell machine metadata, and complete structured operator notes for
-  machine, firmware, SATA mode, USB port, capture source, final visible line,
-  shell-ready, GOP, and keyboard result
+  target-cell machine metadata, complete structured operator notes for machine,
+  firmware, SATA mode, USB port, capture source, final visible line,
+  shell-ready, GOP, and keyboard result, and a finalized evidence manifest
+  hashing the capture log, operator notes, and machine metadata
 - a physical-candidate runtime pass is still review evidence, not an automatic
   support-cell move
 - VMware is the primary virtualized comparison path

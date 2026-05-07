@@ -75,6 +75,133 @@ function Get-KeyValueMap {
   return $values
 }
 
+function Get-FileSha256Lower {
+  param([string]$Path)
+  if (-not (Test-Path $Path -PathType Leaf)) {
+    return ''
+  }
+  return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+}
+
+function Write-PhysicalEvidenceManifest {
+  param(
+    [string]$SessionPath,
+    [string]$CapturedLogPath
+  )
+
+  $sessionText = $SessionPath.Replace('\', '/').ToLowerInvariant()
+  if (-not $sessionText.Contains('/artifacts/physical_bringup/')) {
+    return
+  }
+
+  $manifestPath = Join-Path $SessionPath 'evidence-manifest.txt'
+  $machinePath = Join-Path $SessionPath 'machine.txt'
+  $notesPath = Join-Path $SessionPath 'operator-notes.txt'
+  $shaPath = Join-Path $SessionPath 'sha256.txt'
+  $lines = @(
+    'schema=physical-evidence-v1'
+    'target_support_cell=intel-x86_64+uefi+sata-ahci+gop+keyboard'
+    'evidence_scope=physical-candidate'
+    "capture_log=$([System.IO.Path]::GetFileName($CapturedLogPath))"
+    "capture_log_sha256=$(Get-FileSha256Lower -Path $CapturedLogPath)"
+    'operator_notes=operator-notes.txt'
+    "operator_notes_sha256=$(Get-FileSha256Lower -Path $notesPath)"
+    'machine=machine.txt'
+    "machine_sha256=$(Get-FileSha256Lower -Path $machinePath)"
+  )
+  if (Test-Path $shaPath -PathType Leaf) {
+    $lines += 'boot_artifacts_sha256=sha256.txt'
+    $lines += "boot_artifacts_sha256_sha256=$(Get-FileSha256Lower -Path $shaPath)"
+  }
+  $lines | Set-Content -Encoding ascii $manifestPath
+}
+
+function Add-ManifestFileBlockers {
+  param(
+    [hashtable]$Values,
+    [string]$SessionPath,
+    [string]$FilenameKey,
+    [string]$HashKey,
+    [string]$ExpectedName,
+    [System.Collections.Generic.List[string]]$Blockers
+  )
+
+  $filename = $Values[$FilenameKey]
+  $filenameBlocker = $FilenameKey.Replace('_', '-')
+  if ([string]::IsNullOrWhiteSpace($filename)) {
+    $Blockers.Add("evidence-manifest-$filenameBlocker-missing")
+    return
+  }
+  if ($filename -ne $ExpectedName) {
+    $Blockers.Add("evidence-manifest-$filenameBlocker-mismatch")
+  }
+  if ($filename -ne [System.IO.Path]::GetFileName($filename)) {
+    $Blockers.Add("evidence-manifest-$filenameBlocker-path-invalid")
+    return
+  }
+  $filePath = Join-Path $SessionPath $filename
+  if (-not (Test-Path $filePath -PathType Leaf)) {
+    $Blockers.Add("evidence-manifest-$filenameBlocker-file-missing")
+    return
+  }
+  $expectedHash = $Values[$HashKey]
+  $hashBlocker = $HashKey.Replace('_', '-')
+  if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+    $Blockers.Add("evidence-manifest-$hashBlocker-missing")
+    return
+  }
+  $actualHash = Get-FileSha256Lower -Path $filePath
+  if ($actualHash -ne $expectedHash.ToString().Trim().ToLowerInvariant()) {
+    $Blockers.Add("evidence-manifest-$hashBlocker-mismatch")
+  }
+}
+
+function Add-PhysicalManifestBlockers {
+  param(
+    [string]$SessionPath,
+    [string]$CapturedLogPath,
+    [System.Collections.Generic.List[string]]$Blockers
+  )
+
+  $manifestPath = Join-Path $SessionPath 'evidence-manifest.txt'
+  if (-not (Test-Path $manifestPath -PathType Leaf)) {
+    $Blockers.Add('evidence-manifest-missing')
+    return
+  }
+
+  $manifestLines = @(Get-Content -Path $manifestPath -ErrorAction Stop)
+  $manifestValues = Get-KeyValueMap -Lines $manifestLines
+  $requiredKeys = @(
+    'schema',
+    'target_support_cell',
+    'evidence_scope',
+    'capture_log',
+    'capture_log_sha256',
+    'operator_notes',
+    'operator_notes_sha256',
+    'machine',
+    'machine_sha256'
+  )
+  foreach ($key in $requiredKeys) {
+    if (-not $manifestValues.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($manifestValues[$key])) {
+      $Blockers.Add("evidence-manifest-$($key.Replace('_', '-'))-missing")
+    }
+  }
+  if ($manifestValues.ContainsKey('schema') -and $manifestValues['schema'] -ne 'physical-evidence-v1') {
+    $Blockers.Add('evidence-manifest-schema-invalid')
+  }
+  if ($manifestValues.ContainsKey('target_support_cell') -and $manifestValues['target_support_cell'] -ne 'intel-x86_64+uefi+sata-ahci+gop+keyboard') {
+    $Blockers.Add('evidence-manifest-target-support-cell-mismatch')
+  }
+  if ($manifestValues.ContainsKey('evidence_scope') -and $manifestValues['evidence_scope'] -ne 'physical-candidate') {
+    $Blockers.Add('evidence-manifest-evidence-scope-mismatch')
+  }
+
+  Add-ManifestFileBlockers -Values $manifestValues -SessionPath $SessionPath -FilenameKey 'capture_log' -HashKey 'capture_log_sha256' -ExpectedName ([System.IO.Path]::GetFileName($CapturedLogPath)) -Blockers $Blockers
+  Add-ManifestFileBlockers -Values $manifestValues -SessionPath $SessionPath -FilenameKey 'operator_notes' -HashKey 'operator_notes_sha256' -ExpectedName 'operator-notes.txt' -Blockers $Blockers
+  Add-ManifestFileBlockers -Values $manifestValues -SessionPath $SessionPath -FilenameKey 'machine' -HashKey 'machine_sha256' -ExpectedName 'machine.txt' -Blockers $Blockers
+}
+
 function Add-PhysicalNoteBlockers {
   param(
     [string]$NotesPath,
@@ -180,6 +307,7 @@ function Get-PhysicalEvidenceState {
 
   $notesPath = Join-Path $SessionPath 'operator-notes.txt'
   Add-PhysicalNoteBlockers -NotesPath $notesPath -Blockers $blockers
+  Add-PhysicalManifestBlockers -SessionPath $SessionPath -CapturedLogPath $CapturedLogPath -Blockers $blockers
 
   if ($blockers.Count -eq 0) {
     return @{
@@ -256,6 +384,7 @@ $capturedCopyPath = Join-Path $sessionPath $capturedName
 if ([System.IO.Path]::GetFullPath($resolvedLogPath) -ne [System.IO.Path]::GetFullPath($capturedCopyPath)) {
   Copy-Item $resolvedLogPath $capturedCopyPath -Force
 }
+Write-PhysicalEvidenceManifest -SessionPath $sessionPath -CapturedLogPath $capturedCopyPath
 $physicalEvidence = Get-PhysicalEvidenceState -SessionPath $sessionPath -CapturedLogPath $capturedCopyPath
 $resolvedEvidenceScope = Resolve-EvidenceScope -SessionPath $sessionPath -CapturedLogPath $capturedCopyPath -RequestedScope $EvidenceScope -PhysicalEvidence $physicalEvidence
 
