@@ -109,6 +109,18 @@ struct virtio_input_event {
     uint32_t value;
 } __attribute__((packed));
 
+struct xhci_trb {
+    uint64_t parameter;
+    uint32_t status;
+    uint32_t control;
+} __attribute__((packed));
+
+struct xhci_erst_entry {
+    uint64_t ring_segment_base;
+    uint32_t ring_segment_size;
+    uint32_t reserved;
+} __attribute__((packed));
+
 typedef uint64_t (MS_ABI *efi_block_rw_fn_t)(
     void *self,
     uint32_t media_id,
@@ -262,6 +274,17 @@ static struct luna_pci_record g_net_pci = {0};
 static struct luna_pci_record g_platform_pci = {0};
 static uint8_t g_usb_input_pci_known = 0u;
 static uint8_t g_usb_hid_keyboard_ready = 0u;
+static uint8_t g_xhci_ready = 0u;
+static uint8_t g_xhci_port_ready = 0u;
+static uint8_t g_xhci_connected_port = 0u;
+static uint8_t g_xhci_port_speed = 0u;
+static uint8_t g_xhci_max_slots = 0u;
+static uint8_t g_xhci_max_ports = 0u;
+static uintptr_t g_xhci_mmio = 0u;
+static uint32_t g_xhci_op_offset = 0u;
+static uint32_t g_xhci_runtime_offset = 0u;
+static uint32_t g_xhci_doorbell_offset = 0u;
+static const char *g_usb_hid_blocker = "controller-driver-missing";
 static uint8_t g_virtio_kbd_bus = 0u;
 static uint8_t g_virtio_kbd_slot = 0u;
 static uint8_t g_virtio_kbd_function = 0u;
@@ -400,6 +423,10 @@ static volatile struct virtio_queue_desc g_virtio_kbd_desc[8] __attribute__((ali
 static volatile struct virtio_queue_avail g_virtio_kbd_avail __attribute__((aligned(2)));
 static volatile struct virtio_queue_used g_virtio_kbd_used __attribute__((aligned(4)));
 static volatile struct virtio_input_event g_virtio_kbd_events[8] __attribute__((aligned(8)));
+static struct xhci_trb g_xhci_command_ring[16] __attribute__((aligned(64)));
+static struct xhci_trb g_xhci_event_ring[16] __attribute__((aligned(64)));
+static struct xhci_erst_entry g_xhci_erst[1] __attribute__((aligned(64)));
+static uint64_t g_xhci_dcbaa[256] __attribute__((aligned(64)));
 
 static uint16_t pci_vendor_id(uint8_t bus, uint8_t slot, uint8_t function);
 static uint8_t pci_header_type(uint8_t bus, uint8_t slot, uint8_t function);
@@ -440,6 +467,7 @@ static void intel_net_fill_info(struct luna_net_info *info);
 static int ahci_init(void);
 static int ahci_read_sector(uint32_t lba, uint8_t *out);
 static int ahci_write_sector(uint32_t lba, const uint8_t *src);
+static int xhci_init(void);
 static int virtio_keyboard_init(void);
 static uint8_t virtio_keyboard_poll_byte(void);
 static void zero_bytes(void *dst, size_t len);
@@ -3051,7 +3079,7 @@ static const char *usb_hid_blocker_name(void) {
     if (!detect_usb_input_pci_record()) {
         return "controller-missing";
     }
-    return "controller-driver-missing";
+    return g_usb_hid_blocker;
 }
 
 static const char *net_selection_basis_name(void) {
@@ -3419,6 +3447,17 @@ static void serial_write_input_context(int input_ready) {
         serial_write(usb_hid_blocker_name());
         serial_write(" owner=DEVICE consequence=degraded-continue\r\n");
         serial_write_pci_record("[DEVICE] input usb pci ", &g_usb_input_pci);
+        serial_write("[DEVICE] input usb host ctrl=");
+        serial_write(usb_input_controller_name());
+        serial_write(" init=");
+        serial_write(flag_state_name(g_xhci_ready != 0u));
+        serial_write(" port=");
+        serial_write_hex8(g_xhci_connected_port);
+        serial_write(" port-ready=");
+        serial_write(flag_state_name(g_xhci_port_ready != 0u));
+        serial_write(" blocker=");
+        serial_write(usb_hid_blocker_name());
+        serial_write("\r\n");
     }
 }
 
@@ -3774,6 +3813,330 @@ static void zero_bytes(void *dst, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         out[i] = 0u;
     }
+}
+
+static uint32_t xhci_read32(uint32_t offset) {
+    volatile uint32_t *reg = (volatile uint32_t *)(g_xhci_mmio + offset);
+    return *reg;
+}
+
+static void xhci_write32(uint32_t offset, uint32_t value) {
+    volatile uint32_t *reg = (volatile uint32_t *)(g_xhci_mmio + offset);
+    *reg = value;
+}
+
+static uint32_t xhci_op_read32(uint32_t offset) {
+    return xhci_read32(g_xhci_op_offset + offset);
+}
+
+static void xhci_op_write32(uint32_t offset, uint32_t value) {
+    xhci_write32(g_xhci_op_offset + offset, value);
+}
+
+static void xhci_op_write64(uint32_t offset, uint64_t value) {
+    xhci_op_write32(offset + 4u, (uint32_t)(value >> 32));
+    xhci_op_write32(offset, (uint32_t)(value & 0xFFFFFFFFu));
+}
+
+static void xhci_runtime_write32(uint32_t offset, uint32_t value) {
+    xhci_write32(g_xhci_runtime_offset + offset, value);
+}
+
+static void xhci_runtime_write64(uint32_t offset, uint64_t value) {
+    xhci_runtime_write32(offset + 4u, (uint32_t)(value >> 32));
+    xhci_runtime_write32(offset, (uint32_t)(value & 0xFFFFFFFFu));
+}
+
+static uint32_t xhci_port_offset(uint8_t port) {
+    return g_xhci_op_offset + 0x400u + ((uint32_t)port - 1u) * 0x10u;
+}
+
+static int xhci_wait_expired(uint64_t start_us, uint32_t loops) {
+    uint64_t now_us;
+    if ((loops & 0x3FFu) != 0u) {
+        return 0;
+    }
+    now_us = clock_microseconds();
+    return now_us > start_us && (now_us - start_us) > 100000u;
+}
+
+static int xhci_wait_op_clear(uint32_t offset, uint32_t mask) {
+    uint64_t start_us = clock_microseconds();
+    for (uint32_t loops = 0u; loops < 100000000u; ++loops) {
+        if ((xhci_op_read32(offset) & mask) == 0u) {
+            return 1;
+        }
+        if (xhci_wait_expired(start_us, loops)) {
+            break;
+        }
+        __asm__ volatile ("pause");
+    }
+    return (xhci_op_read32(offset) & mask) == 0u;
+}
+
+static int xhci_wait_status(uint32_t mask, int want_set) {
+    uint64_t start_us = clock_microseconds();
+    uint32_t status;
+    for (uint32_t loops = 0u; loops < 100000000u; ++loops) {
+        status = xhci_op_read32(0x04u);
+        if (want_set) {
+            if ((status & mask) == mask) {
+                return 1;
+            }
+        } else if ((status & mask) == 0u) {
+            return 1;
+        }
+        if (xhci_wait_expired(start_us, loops)) {
+            break;
+        }
+        __asm__ volatile ("pause");
+    }
+    status = xhci_op_read32(0x04u);
+    if (want_set) {
+        return (status & mask) == mask;
+    }
+    return (status & mask) == 0u;
+}
+
+static void xhci_legacy_handoff(uint32_t hccparams1) {
+    uint32_t ext_offset = ((hccparams1 >> 16) & 0xFFFFu) << 2;
+
+    for (uint32_t index = 0u; index < 32u && ext_offset != 0u; ++index) {
+        uint32_t cap = xhci_read32(ext_offset);
+        uint8_t cap_id = (uint8_t)(cap & 0xFFu);
+        uint8_t next = (uint8_t)((cap >> 8) & 0xFFu);
+        if (cap_id == 0x01u) {
+            if ((cap & (1u << 16)) != 0u) {
+                xhci_write32(ext_offset, cap | (1u << 24));
+                for (uint32_t loops = 0u; loops < 1000000u; ++loops) {
+                    cap = xhci_read32(ext_offset);
+                    if ((cap & (1u << 16)) == 0u) {
+                        break;
+                    }
+                }
+            }
+            serial_write("[XHCI] legacy handoff cap=");
+            serial_write_hex32(cap);
+            serial_write(" off=");
+            serial_write_hex32(ext_offset);
+            serial_write("\r\n");
+            return;
+        }
+        if (next == 0u) {
+            return;
+        }
+        ext_offset += ((uint32_t)next << 2);
+    }
+}
+
+static int xhci_reset_connected_port(void) {
+    const uint32_t port_rwc_mask =
+        (1u << 17) | (1u << 18) | (1u << 19) | (1u << 20) |
+        (1u << 21) | (1u << 22) | (1u << 23);
+
+    g_xhci_connected_port = 0u;
+    g_xhci_port_ready = 0u;
+    g_xhci_port_speed = 0u;
+
+    for (uint8_t port = 1u; port <= g_xhci_max_ports; ++port) {
+        uint32_t offset = xhci_port_offset(port);
+        uint32_t portsc = xhci_read32(offset);
+        if ((portsc & 0x01u) == 0u) {
+            continue;
+        }
+
+        g_xhci_connected_port = port;
+        g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
+        if ((portsc & 0x02u) == 0u) {
+            xhci_write32(offset, (portsc & ~port_rwc_mask) | (1u << 4));
+            for (uint32_t loops = 0u; loops < 10000000u; ++loops) {
+                portsc = xhci_read32(offset);
+                if ((portsc & (1u << 4)) == 0u) {
+                    break;
+                }
+            }
+        }
+
+        portsc = xhci_read32(offset);
+        g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
+        if ((portsc & 0x02u) != 0u) {
+            g_xhci_port_ready = 1u;
+            g_usb_hid_blocker = "usb-enumeration-missing";
+            serial_write("[XHCI] port ready port=");
+            serial_write_hex8(port);
+            serial_write(" speed=");
+            serial_write_hex8(g_xhci_port_speed);
+            serial_write(" portsc=");
+            serial_write_hex32(portsc);
+            serial_write("\r\n");
+            return 1;
+        }
+
+        g_usb_hid_blocker = "port-reset";
+        serial_write("[XHCI] port reset blocked port=");
+        serial_write_hex8(port);
+        serial_write(" portsc=");
+        serial_write_hex32(portsc);
+        serial_write("\r\n");
+        return 0;
+    }
+
+    g_usb_hid_blocker = "usb-device-missing";
+    return 0;
+}
+
+static int xhci_init(void) {
+    uint8_t bus = 0u;
+    uint8_t slot = 0u;
+    uint8_t function = 0u;
+    uint32_t command;
+    uint32_t hcs1;
+    uint32_t hcs2;
+    uint32_t hcc1;
+    uint32_t scratchpads;
+    uint32_t usbcmd;
+    uintptr_t bar;
+
+    if (g_xhci_ready != 0u) {
+        return 1;
+    }
+    if (!detect_usb_input_pci_record()) {
+        g_usb_hid_blocker = "controller-missing";
+        return 0;
+    }
+    if (g_usb_input_pci.prog_if != 0x30u) {
+        g_usb_hid_blocker = "controller-family-not-xhci";
+        return 0;
+    }
+    bus = g_usb_input_pci.bus;
+    slot = g_usb_input_pci.slot;
+    function = g_usb_input_pci.function;
+
+    command = pci_config_read32(bus, slot, function, 0x04u);
+    command |= 0x00000006u;
+    pci_config_write16(bus, slot, function, 0x04u, (uint16_t)(command & 0xFFFFu));
+
+    bar = pci_read_bar_address(bus, slot, function, 0u);
+    if (bar == 0u) {
+        g_usb_hid_blocker = "pci-bar-mmio-missing";
+        return 0;
+    }
+    g_xhci_mmio = bar;
+    g_xhci_op_offset = (uint8_t)(xhci_read32(0x00u) & 0xFFu);
+    g_xhci_doorbell_offset = xhci_read32(0x14u) & ~0x03u;
+    g_xhci_runtime_offset = xhci_read32(0x18u) & ~0x1Fu;
+    hcs1 = xhci_read32(0x04u);
+    hcs2 = xhci_read32(0x08u);
+    hcc1 = xhci_read32(0x10u);
+    g_xhci_max_slots = (uint8_t)(hcs1 & 0xFFu);
+    g_xhci_max_ports = (uint8_t)((hcs1 >> 24) & 0xFFu);
+    scratchpads = ((hcs2 >> 27) & 0x1Fu) << 5;
+    scratchpads |= (hcs2 >> 21) & 0x1Fu;
+    if (scratchpads != 0u) {
+        g_usb_hid_blocker = "scratchpad-unsupported";
+        return 0;
+    }
+    if (g_xhci_max_slots == 0u || g_xhci_max_ports == 0u) {
+        g_usb_hid_blocker = "controller-capability-invalid";
+        return 0;
+    }
+    xhci_legacy_handoff(hcc1);
+    serial_write("[XHCI] probe mmio=");
+    serial_write_hex64((uint64_t)g_xhci_mmio);
+    serial_write(" op=");
+    serial_write_hex32(g_xhci_op_offset);
+    serial_write(" hcs1=");
+    serial_write_hex32(hcs1);
+    serial_write(" hcs2=");
+    serial_write_hex32(hcs2);
+    serial_write(" hcc1=");
+    serial_write_hex32(hcc1);
+    serial_write(" cmd=");
+    serial_write_hex32(xhci_op_read32(0x00u));
+    serial_write(" sts=");
+    serial_write_hex32(xhci_op_read32(0x04u));
+    serial_write("\r\n");
+
+    usbcmd = xhci_op_read32(0x00u);
+    xhci_op_write32(0x00u, usbcmd & ~0x01u);
+    if (!xhci_wait_status(0x01u, 1)) {
+        g_usb_hid_blocker = "controller-halt";
+        serial_write("[XHCI] controller halt blocked cmd=");
+        serial_write_hex32(xhci_op_read32(0x00u));
+        serial_write(" sts=");
+        serial_write_hex32(xhci_op_read32(0x04u));
+        serial_write("\r\n");
+        return 0;
+    }
+
+    xhci_op_write32(0x00u, xhci_op_read32(0x00u) | (1u << 1));
+    if (!xhci_wait_op_clear(0x00u, (1u << 1))) {
+        g_usb_hid_blocker = "controller-reset";
+        serial_write("[XHCI] controller reset blocked cmd=");
+        serial_write_hex32(xhci_op_read32(0x00u));
+        serial_write(" sts=");
+        serial_write_hex32(xhci_op_read32(0x04u));
+        serial_write("\r\n");
+        return 0;
+    }
+    if (!xhci_wait_status((1u << 11), 0)) {
+        g_usb_hid_blocker = "controller-not-ready";
+        serial_write("[XHCI] controller not ready cmd=");
+        serial_write_hex32(xhci_op_read32(0x00u));
+        serial_write(" sts=");
+        serial_write_hex32(xhci_op_read32(0x04u));
+        serial_write("\r\n");
+        return 0;
+    }
+
+    zero_bytes(g_xhci_command_ring, sizeof(g_xhci_command_ring));
+    zero_bytes(g_xhci_event_ring, sizeof(g_xhci_event_ring));
+    zero_bytes(g_xhci_erst, sizeof(g_xhci_erst));
+    zero_bytes(g_xhci_dcbaa, sizeof(g_xhci_dcbaa));
+
+    g_xhci_command_ring[15].parameter = (uint64_t)(uintptr_t)g_xhci_command_ring;
+    g_xhci_command_ring[15].status = 0u;
+    g_xhci_command_ring[15].control = (6u << 10) | (1u << 1);
+
+    g_xhci_erst[0].ring_segment_base = (uint64_t)(uintptr_t)g_xhci_event_ring;
+    g_xhci_erst[0].ring_segment_size = 16u;
+    g_xhci_erst[0].reserved = 0u;
+
+    xhci_op_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_dcbaa);
+    xhci_op_write64(0x18u, ((uint64_t)(uintptr_t)g_xhci_command_ring) | 1u);
+    xhci_runtime_write32(0x28u, 1u);
+    xhci_runtime_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_erst);
+    xhci_runtime_write64(0x38u, (uint64_t)(uintptr_t)g_xhci_event_ring);
+    xhci_op_write32(0x38u, g_xhci_max_slots < 8u ? g_xhci_max_slots : 8u);
+
+    memory_barrier();
+    xhci_op_write32(0x00u, xhci_op_read32(0x00u) | 0x01u);
+    if (!xhci_wait_status(0x01u, 0)) {
+        g_usb_hid_blocker = "controller-run";
+        serial_write("[XHCI] controller run blocked cmd=");
+        serial_write_hex32(xhci_op_read32(0x00u));
+        serial_write(" sts=");
+        serial_write_hex32(xhci_op_read32(0x04u));
+        serial_write("\r\n");
+        return 0;
+    }
+
+    g_xhci_ready = 1u;
+    g_usb_hid_blocker = "usb-device-missing";
+    serial_write("[XHCI] controller ready slots=");
+    serial_write_hex8(g_xhci_max_slots);
+    serial_write(" ports=");
+    serial_write_hex8(g_xhci_max_ports);
+    serial_write(" mmio=");
+    serial_write_hex64((uint64_t)g_xhci_mmio);
+    serial_write(" db=");
+    serial_write_hex32(g_xhci_doorbell_offset);
+    serial_write(" rt=");
+    serial_write_hex32(g_xhci_runtime_offset);
+    serial_write("\r\n");
+
+    (void)xhci_reset_connected_port();
+    return 1;
 }
 
 static void net_mmio_write32(uint32_t offset, uint32_t value) {
@@ -4439,6 +4802,7 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
     g_clock_tsc_hz = calibrate_tsc_hz();
     g_clock_tsc_base = clock_ticks();
     serial_write("[DEVICE] clock ready\r\n");
+    (void)xhci_init();
     if (!virtio_keyboard_init()) {
         input_ready = keyboard_init();
     } else {
