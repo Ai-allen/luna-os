@@ -100,12 +100,15 @@ python .\build\run_qemu_uefi_stabilitycheck.py
 python .\build\run_qemu_inboundcheck.py
 python .\build\run_qemu_externalstackcheck.py
 python .\build\run_qemu_updateapplycheck.py
+python .\build\run_qemu_updaterollbackcheck.py
+python .\build\run_qemu_installer_failurecheck.py
 python .\build\run_qemu_fullregression.py
 ```
 
 These passing results define the current LunaOS 1.0 baseline across BIOS,
 desktop, VMware UEFI desktop cross-check, update apply, external inbound,
-external stack, UEFI shell/stability, and full regression.
+external stack, UEFI shell/stability, update rollback, installer failure, and
+full regression.
 `pwsh -NoProfile -File .\build\run_vmware_desktopcheck.ps1` is a separate
 host-level gate. `python .\build\run_qemu_fullregression.py` remains the
 QEMU-only regression wrapper.

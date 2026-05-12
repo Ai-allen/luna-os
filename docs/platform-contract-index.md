@@ -33,6 +33,8 @@ Primary gates:
 - `python .\build\run_qemu_inboundcheck.py`
 - `python .\build\run_qemu_externalstackcheck.py`
 - `python .\build\run_qemu_updateapplycheck.py`
+- `python .\build\run_qemu_updaterollbackcheck.py`
+- `python .\build\run_qemu_installer_failurecheck.py`
 - `python .\build\run_qemu_fullregression.py`
 
 Primary modules:

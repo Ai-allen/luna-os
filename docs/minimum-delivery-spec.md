@@ -44,6 +44,8 @@ The current LunaOS 1.0 baseline is:
 - `python .\build\run_qemu_inboundcheck.py`
 - `python .\build\run_qemu_externalstackcheck.py`
 - `python .\build\run_qemu_updateapplycheck.py`
+- `python .\build\run_qemu_updaterollbackcheck.py`
+- `python .\build\run_qemu_installer_failurecheck.py`
 - `python .\build\run_qemu_fullregression.py`
 
 These passing results define the current LunaOS 1.0 gate.
