@@ -62,6 +62,11 @@ SECTION_PATTERNS = {
         "[DEVICE] net path",
         "[DEVICE] net select ",
         "[DEVICE] net pci ",
+        "[DEVICE] net driver ",
+        "[DEVICE] net link ",
+        "[DEVICE] net mac=",
+        "[DEVICE] net blocker=",
+        "[DEVICE] net raw ",
     ),
     "platform": (
         "[DEVICE] platform pci ",

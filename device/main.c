@@ -464,6 +464,7 @@ static int intel_net_init(void);
 static int intel_net_read(uint8_t *out, uint64_t *size);
 static int intel_net_write(const uint8_t *src, uint64_t size);
 static void intel_net_fill_info(struct luna_net_info *info);
+static uint32_t net_mmio_read32(uint32_t offset);
 static int ahci_init(void);
 static int ahci_read_sector(uint32_t lba, uint8_t *out);
 static int ahci_write_sector(uint32_t lba, const uint8_t *src);
@@ -3093,6 +3094,78 @@ static const char *net_selection_basis_name(void) {
     return "soft-loop";
 }
 
+static const char *net_driver_family_text(void) {
+    uint32_t family = net_driver_family();
+    if (family == LUNA_LANE_DRIVER_E1000) {
+        return "e1000";
+    }
+    if (family == LUNA_LANE_DRIVER_E1000E) {
+        return "e1000e";
+    }
+    if (pci_record_present(&g_net_pci)) {
+        return "unsupported";
+    }
+    return "none";
+}
+
+static uint32_t net_status_register(void) {
+    return g_net_mmio != 0u ? net_mmio_read32(0x0008u) : 0u;
+}
+
+static const char *net_bind_state_name(void) {
+    uint32_t family = net_driver_family();
+    if (g_net_ready != 0u) {
+        return "ready";
+    }
+    if (!pci_record_present(&g_net_pci)) {
+        return "missing";
+    }
+    if (family == LUNA_LANE_DRIVER_E1000 || family == LUNA_LANE_DRIVER_E1000E) {
+        return "degraded";
+    }
+    return "missing";
+}
+
+static const char *net_link_state_name(void) {
+    if (g_net_ready == 0u || g_net_mmio == 0u) {
+        return "unknown";
+    }
+    return (net_status_register() & 0x00000002u) != 0u ? "up" : "down";
+}
+
+static const char *net_runtime_mode_name(void) {
+    if (!pci_record_present(&g_net_pci)) {
+        return "soft-loop";
+    }
+    return g_net_ready != 0u ? "external" : "offline";
+}
+
+static const char *net_blocker_name(void) {
+    uint32_t family = net_driver_family();
+    if (!pci_record_present(&g_net_pci)) {
+        return "nic-not-present";
+    }
+    if (family != LUNA_LANE_DRIVER_E1000 && family != LUNA_LANE_DRIVER_E1000E) {
+        return "unsupported-nic-family";
+    }
+    if (g_net_ready == 0u) {
+        return g_net_mmio == 0u ? "pci-mmio-map-failed" : "driver-bind-denied";
+    }
+    if ((net_status_register() & 0x00000002u) == 0u) {
+        return "link-up-missing";
+    }
+    return "none";
+}
+
+static void serial_write_net_mac(void) {
+    for (uint32_t i = 0u; i < 6u; ++i) {
+        serial_write_hex8(g_net_mac[i]);
+        if (i + 1u != 6u) {
+            serial_putc(':');
+        }
+    }
+}
+
 static const char *store_state_name(uint64_t state) {
     if (state == LUNA_STORE_STATE_CLEAN) {
         return "clean";
@@ -3462,7 +3535,9 @@ static void serial_write_input_context(int input_ready) {
 }
 
 static void serial_write_network_context(void) {
+    const char *blocker;
     detect_net_pci_record();
+    blocker = net_blocker_name();
     serial_write("[DEVICE] net path driver=");
     serial_write(net_driver_name());
     serial_write(" family=");
@@ -3480,6 +3555,30 @@ static void serial_write_network_context(void) {
     serial_write(flag_state_name(g_net_ready != 0u));
     serial_write("\r\n");
     serial_write_pci_record("[DEVICE] net pci ", &g_net_pci);
+    serial_write("[DEVICE] net driver family=");
+    serial_write(net_driver_family_text());
+    serial_write(" bind=");
+    serial_write(net_bind_state_name());
+    serial_write(" blocker=");
+    serial_write(blocker);
+    serial_write("\r\n");
+    serial_write("[DEVICE] net link state=");
+    serial_write(net_link_state_name());
+    serial_write(" status=");
+    serial_write_hex32(net_status_register());
+    serial_write(" mode=");
+    serial_write(net_runtime_mode_name());
+    serial_write(" raw=ethertype-88B5\r\n");
+    serial_write("[DEVICE] net mac=");
+    serial_write_net_mac();
+    serial_write(" mmio=");
+    serial_write_hex64((uint64_t)g_net_mmio);
+    serial_write("\r\n");
+    if (blocker[0] != 'n' || blocker[1] != 'o' || blocker[2] != 'n' || blocker[3] != 'e' || blocker[4] != '\0') {
+        serial_write("[DEVICE] net blocker=");
+        serial_write(blocker);
+        serial_write("\r\n");
+    }
 }
 
 static void serial_write_platform_context(void) {
@@ -4166,9 +4265,11 @@ static int intel_net_write(const uint8_t *src, uint64_t size) {
     uint16_t slot;
     uintptr_t tx_addr;
     if (g_net_ready == 0u || size == 0u || size > sizeof(g_net_tx_buffer)) {
+        serial_write("[DEVICE] net raw tx ethertype=88B5 result=blocked blocker=packet-send-missing\r\n");
         return 0;
     }
     if (size > sizeof(g_net_tx_buffer) - 14u) {
+        serial_write("[DEVICE] net raw tx ethertype=88B5 result=blocked blocker=packet-send-missing\r\n");
         return 0;
     }
     slot = g_net_tx_index;
@@ -4191,10 +4292,16 @@ static int intel_net_write(const uint8_t *src, uint64_t size) {
     g_net_tx_tail = (uint16_t)((slot + 1u) & 7u);
     net_mmio_write32(0x3818u, g_net_tx_tail);
     if (!intel_net_wait_tx_done()) {
+        serial_write("[DEVICE] net raw tx ethertype=88B5 result=failed blocker=packet-send-missing\r\n");
         return 0;
     }
     g_net_tx_packets += 1u;
     g_net_tx_index = (uint16_t)((slot + 1u) & 7u);
+    serial_write("[DEVICE] net raw tx ethertype=88B5 bytes=");
+    serial_write_hex64(frame_size);
+    serial_write(" result=sent tx_packets=");
+    serial_write_hex64(g_net_tx_packets);
+    serial_write("\r\n");
     return 1;
 }
 
@@ -4252,6 +4359,12 @@ static int intel_net_read(uint8_t *out, uint64_t *size) {
         copy_bytes(out, g_net_rx_buffers[slot], desc->length);
         *size = desc->length;
     }
+    serial_write("[DEVICE] net raw rx ethertype=");
+    serial_write_hex8(g_net_rx_buffers[slot][12]);
+    serial_write_hex8(g_net_rx_buffers[slot][13]);
+    serial_write(" bytes=");
+    serial_write_hex64((uint64_t)desc->length);
+    serial_write(" result=received\r\n");
     desc->status = 0u;
     desc->length = 0u;
     g_net_rx_packets += 1u;

@@ -25,6 +25,17 @@ REQUIRED_PHYSICAL_MANIFEST_KEYS = (
     "operator_notes_sha256",
     "machine",
     "machine_sha256",
+    "pci_nic_present",
+    "nic_vendor_id",
+    "nic_device_id",
+    "nic_class",
+    "nic_driver_family",
+    "nic_bind",
+    "link_state",
+    "mac_address",
+    "network_mode",
+    "runtime_consequence",
+    "blocker",
 )
 
 VIRTUALIZED_LOG_MARKERS = ("qemu", "vmware")
@@ -50,6 +61,14 @@ PHYSICAL_NOTE_ENUMS = {
     "shell_ready": {"yes", "no", "not-reached"},
     "gop_result": {"ready", "missing", "not-reached"},
     "keyboard_result": {"ready", "blocked", "not-reached"},
+}
+PHYSICAL_NETWORK_ENUMS = {
+    "pci_nic_present": {"yes", "no"},
+    "nic_driver_family": {"e1000", "e1000e", "unsupported", "none"},
+    "nic_bind": {"ready", "missing", "denied", "degraded"},
+    "link_state": {"up", "down", "unknown"},
+    "network_mode": {"offline", "soft-loop", "external", "physical-candidate"},
+    "runtime_consequence": {"continue", "degraded", "recovery", "fatal"},
 }
 
 
@@ -149,6 +168,10 @@ def physical_manifest_blockers(session_dir: Path, log_path: Path) -> list[str]:
         blockers.append("evidence-manifest-target-support-cell-mismatch")
     if values.get("evidence_scope") and values["evidence_scope"] != EVIDENCE_SCOPE_PHYSICAL:
         blockers.append("evidence-manifest-evidence-scope-mismatch")
+    for key, allowed_values in PHYSICAL_NETWORK_ENUMS.items():
+        value = values.get(key, "").strip()
+        if value and value not in allowed_values:
+            blockers.append(f"evidence-manifest-{blocker_key(key)}-invalid")
 
     blockers.extend(
         manifest_file_blockers(
@@ -382,6 +405,17 @@ def render_verdict(log_path: Path, evidence_scope: str = "auto") -> str:
         f"physical_evidence_blockers={physical_evidence['blockers']}",
         f"usb_hid_bind_state={classification['usb_hid_bind_state']}",
         f"usb_hid_blocker={classification['usb_hid_blocker']}",
+        f"pci_nic_present={classification['pci_nic_present']}",
+        f"nic_vendor_id={classification['nic_vendor_id']}",
+        f"nic_device_id={classification['nic_device_id']}",
+        f"nic_class={classification['nic_class']}",
+        f"nic_driver_family={classification['nic_driver_family']}",
+        f"nic_bind={classification['nic_bind']}",
+        f"link_state={classification['link_state']}",
+        f"mac_address={classification['mac_address']}",
+        f"network_mode={classification['network_mode']}",
+        f"network_runtime_consequence={classification['network_runtime_consequence']}",
+        f"network_blocker={classification['network_blocker']}",
         f"support_cell_runtime_gate={classification['support_cell_runtime_gate']}",
         f"support_cell_blockers={classification['support_cell_blockers']}",
         f"runtime_consequence={classification['runtime_consequence']}",

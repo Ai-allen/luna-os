@@ -51,6 +51,27 @@ def parse_optional_value(line: str | None, key: str, default: str = "(missing)")
     return match.group(1)
 
 
+def present_value(value: str | None, default: str = "none") -> str:
+    if not value or value == "(missing)":
+        return default
+    return value
+
+
+def has_pci_record(line: str | None) -> bool:
+    return bool(line and not line.endswith(" none") and " vendor=" in line)
+
+
+def is_virtualized_log_path(log_path: Path) -> bool:
+    text = str(log_path).replace("\\", "/").lower()
+    name = log_path.name.lower()
+    return "qemu" in name or "vmware" in name or "/artifacts/vmware_bringup/" in text
+
+
+def is_physical_candidate_log_path(log_path: Path) -> bool:
+    text = str(log_path).replace("\\", "/").lower()
+    return "/artifacts/physical_bringup/" in text and not is_virtualized_log_path(log_path)
+
+
 def build_profile(*parts: tuple[str, str]) -> str:
     return ",".join(f"{key}={value}" for key, value in parts)
 
@@ -76,6 +97,93 @@ def usb_hid_blocker(input_select: str | None, input_usb_candidate: str | None) -
     if state == "bound":
         return "none"
     return "(missing)"
+
+
+def nic_driver_family(net_driver_line: str | None, net_line: str | None, net_pci: str | None) -> str:
+    family = parse_optional_value(net_driver_line, "family")
+    if family in {"e1000", "e1000e", "unsupported", "none"}:
+        return family
+    driver = parse_driver(net_line, "driver")
+    if driver in {"e1000", "e1000-stub"}:
+        return "e1000"
+    if driver in {"e1000e", "e1000e-stub"}:
+        return "e1000e"
+    if has_pci_record(net_pci):
+        return "unsupported"
+    return "none"
+
+
+def nic_bind_state(net_driver_line: str | None, net_line: str | None, net_pci: str | None) -> str:
+    bind = parse_optional_value(net_driver_line, "bind")
+    if bind in {"ready", "missing", "denied", "degraded"}:
+        return bind
+    if net_line and "lane=ready" in net_line:
+        return "ready"
+    if has_pci_record(net_pci):
+        return "degraded" if nic_driver_family(net_driver_line, net_line, net_pci) in {"e1000", "e1000e"} else "missing"
+    return "missing"
+
+
+def network_mode(
+    log_path: Path,
+    net_link_line: str | None,
+    net_driver_line: str | None,
+    net_line: str | None,
+    net_pci: str | None,
+) -> str:
+    if is_physical_candidate_log_path(log_path) and has_pci_record(net_pci):
+        return "physical-candidate"
+    mode = parse_optional_value(net_link_line, "mode")
+    if mode in {"offline", "soft-loop", "external", "physical-candidate"}:
+        return mode
+    if not has_pci_record(net_pci):
+        return "soft-loop"
+    if nic_bind_state(net_driver_line, net_line, net_pci) == "ready":
+        return "external"
+    return "offline"
+
+
+def network_blocker(
+    net_driver_line: str | None,
+    net_link_line: str | None,
+    net_line: str | None,
+    net_pci: str | None,
+) -> str:
+    blocker = parse_optional_value(net_driver_line, "blocker")
+    if blocker != "(missing)":
+        return blocker
+    if not has_pci_record(net_pci):
+        return "nic-not-present"
+    family = nic_driver_family(net_driver_line, net_line, net_pci)
+    if family == "unsupported":
+        return "unsupported-nic-family"
+    bind = nic_bind_state(net_driver_line, net_line, net_pci)
+    if bind == "denied":
+        return "driver-bind-denied"
+    if bind != "ready":
+        return "pci-mmio-map-failed"
+    if parse_optional_value(net_link_line, "state", "unknown") == "down":
+        return "link-up-missing"
+    return "none"
+
+
+def network_runtime_consequence(blocker: str) -> str:
+    if blocker == "none":
+        return "continue"
+    if blocker in {
+        "nic-not-present",
+        "unsupported-nic-family",
+        "link-up-missing",
+        "tx-ring-missing",
+        "rx-ring-missing",
+        "dhcp-missing",
+        "packet-send-missing",
+        "packet-recv-missing",
+    }:
+        return "degraded"
+    if blocker in {"pci-mmio-map-failed", "driver-bind-denied"}:
+        return "degraded"
+    return "recovery"
 
 
 TARGET_SUPPORT_CELL = "intel-x86_64+uefi+sata-ahci+gop+keyboard"
@@ -355,6 +463,9 @@ def classify(log_path: Path) -> dict[str, str]:
     net_line = first_match(lines, "[DEVICE] net path")
     net_select_line = first_match(lines, "[DEVICE] net select ")
     net_pci = first_match(lines, "[DEVICE] net pci ")
+    net_driver_line = first_match(lines, "[DEVICE] net driver ")
+    net_link_line = first_match(lines, "[DEVICE] net link ")
+    net_mac_line = first_match(lines, "[DEVICE] net mac=")
     platform_pci = first_match(lines, "[DEVICE] platform pci ")
 
     storage_lane, display_lane, input_lane, net_lane = parse_lane(
@@ -369,6 +480,7 @@ def classify(log_path: Path) -> dict[str, str]:
 
     lsys_status = "ok" if first_match(lines, "[BOOT] lsys super read ok") else "fail" if first_match(lines, "[BOOT] lsys read fail") else "unknown"
     native_pair = "ok" if first_match(lines, "[BOOT] native pair ok") else "missing"
+    network_blocker_value = network_blocker(net_driver_line, net_link_line, net_line, net_pci)
 
     driver_profile = (
         build_profile(
@@ -403,6 +515,17 @@ def classify(log_path: Path) -> dict[str, str]:
         "usb_hid_bind_state": parse_optional_value(input_select_line, "usb-hid"),
         "usb_hid_blocker": usb_hid_blocker(input_select_line, input_usb_candidate),
         "net_pci": net_pci or "(missing)",
+        "pci_nic_present": "yes" if has_pci_record(net_pci) else "no",
+        "nic_vendor_id": present_value(parse_optional_value(net_pci, "vendor")),
+        "nic_device_id": present_value(parse_optional_value(net_pci, "device")),
+        "nic_class": present_value(parse_optional_value(net_pci, "class")),
+        "nic_driver_family": nic_driver_family(net_driver_line, net_line, net_pci),
+        "nic_bind": nic_bind_state(net_driver_line, net_line, net_pci),
+        "link_state": present_value(parse_optional_value(net_link_line, "state"), "unknown"),
+        "mac_address": present_value(parse_optional_value(net_mac_line, "mac"), "00:00:00:00:00:00"),
+        "network_mode": network_mode(log_path, net_link_line, net_driver_line, net_line, net_pci),
+        "network_runtime_consequence": network_runtime_consequence(network_blocker_value),
+        "network_blocker": network_blocker_value,
         "platform_pci": platform_pci or "(missing)",
         "fwblk": fwblk,
         "lsys": lsys_status,
@@ -445,6 +568,19 @@ def summarize(log_path: Path) -> str:
         f"usb_hid_blocker={info['usb_hid_blocker']}",
         f"net_pci={info['net_pci']}",
         f"platform_pci={info['platform_pci']}",
+        "",
+        "[physical_network]",
+        f"pci_nic_present={info['pci_nic_present']}",
+        f"nic_vendor_id={info['nic_vendor_id']}",
+        f"nic_device_id={info['nic_device_id']}",
+        f"nic_class={info['nic_class']}",
+        f"nic_driver_family={info['nic_driver_family']}",
+        f"nic_bind={info['nic_bind']}",
+        f"link_state={info['link_state']}",
+        f"mac_address={info['mac_address']}",
+        f"network_mode={info['network_mode']}",
+        f"runtime_consequence={info['network_runtime_consequence']}",
+        f"blocker={info['network_blocker']}",
         "",
         "[contracts]",
         f"fwblk={info['fwblk']}",

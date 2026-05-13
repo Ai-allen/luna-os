@@ -169,6 +169,54 @@ def main() -> int:
             "storage=fwblk-target,serial=piix-pci,display=gop-fb,input=i8042,net=e1000-ready",
         )
 
+        physical_network_path = write_case(
+            tmp,
+            "physical-network.log",
+            "\n".join(
+                (
+                    "[DEVICE] net path driver=e1000e family=0000000D lane=ready mmio=0000000081060000",
+                    "[DEVICE] net select basis=e1000e-ready pci=ready live=ready",
+                    "[DEVICE] net pci vendor=8086 device=10D3 bdf=00:02.00 class=02/00/00 hdr=00",
+                    "[DEVICE] net driver family=e1000e bind=ready blocker=none",
+                    "[DEVICE] net link state=up status=00000002 mode=external raw=ethertype-88B5",
+                    "[DEVICE] net mac=52:54:00:12:34:56 mmio=0000000081060000",
+                )
+            )
+            + "\n",
+        )
+        physical_network = classify(physical_network_path)
+        require("network pci present", physical_network["pci_nic_present"], "yes")
+        require("network vendor", physical_network["nic_vendor_id"], "8086")
+        require("network device", physical_network["nic_device_id"], "10D3")
+        require("network class", physical_network["nic_class"], "02/00/00")
+        require("network family", physical_network["nic_driver_family"], "e1000e")
+        require("network bind", physical_network["nic_bind"], "ready")
+        require("network link", physical_network["link_state"], "up")
+        require("network mac", physical_network["mac_address"], "52:54:00:12:34:56")
+        require("network mode", physical_network["network_mode"], "external")
+        require("network consequence", physical_network["network_runtime_consequence"], "continue")
+        require("network blocker", physical_network["network_blocker"], "none")
+
+        unsupported_network_path = write_case(
+            tmp,
+            "unsupported-network.log",
+            "\n".join(
+                (
+                    "[DEVICE] net path driver=soft-loop family=00000007 lane=fallback mmio=0000000000000000",
+                    "[DEVICE] net pci vendor=10EC device=8168 bdf=03:00.00 class=02/00/00 hdr=00",
+                    "[DEVICE] net driver family=unsupported bind=missing blocker=unsupported-nic-family",
+                    "[DEVICE] net link state=unknown status=00000000 mode=offline raw=ethertype-88B5",
+                    "[DEVICE] net mac=00:00:00:00:00:00 mmio=0000000000000000",
+                )
+            )
+            + "\n",
+        )
+        unsupported_network = classify(unsupported_network_path)
+        require("unsupported network pci present", unsupported_network["pci_nic_present"], "yes")
+        require("unsupported network family", unsupported_network["nic_driver_family"], "unsupported")
+        require("unsupported network bind", unsupported_network["nic_bind"], "missing")
+        require("unsupported network blocker", unsupported_network["network_blocker"], "unsupported-nic-family")
+
         governance_path = write_case(
             tmp,
             "governance.log",

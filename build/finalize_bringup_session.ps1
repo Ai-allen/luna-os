@@ -83,6 +83,129 @@ function Get-FileSha256Lower {
   return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
 }
 
+function Get-FirstLogLine {
+  param(
+    [object[]]$Lines,
+    [string]$Needle
+  )
+  foreach ($line in $Lines) {
+    if ($null -ne $line -and $line.ToString().Contains($Needle)) {
+      return $line.ToString()
+    }
+  }
+  return ''
+}
+
+function Get-LineField {
+  param(
+    [string]$Line,
+    [string]$Key
+  )
+  if ([string]::IsNullOrWhiteSpace($Line)) {
+    return ''
+  }
+  $match = [regex]::Match($Line, "(^| )$([regex]::Escape($Key))=([^ ]+)")
+  if ($match.Success) {
+    return $match.Groups[2].Value
+  }
+  return ''
+}
+
+function Get-PhysicalNetworkManifestValues {
+  param(
+    [string]$SessionPath,
+    [string]$CapturedLogPath
+  )
+
+  $logLines = @(Get-Content -Path $CapturedLogPath -ErrorAction Stop)
+  $netPathLine = Get-FirstLogLine -Lines $logLines -Needle '[DEVICE] net path'
+  $netPciLine = Get-FirstLogLine -Lines $logLines -Needle '[DEVICE] net pci '
+  $netDriverLine = Get-FirstLogLine -Lines $logLines -Needle '[DEVICE] net driver '
+  $netLinkLine = Get-FirstLogLine -Lines $logLines -Needle '[DEVICE] net link '
+  $netMacLine = Get-FirstLogLine -Lines $logLines -Needle '[DEVICE] net mac='
+  $pciPresent = -not [string]::IsNullOrWhiteSpace($netPciLine) -and $netPciLine.Contains(' vendor=')
+  $vendor = Get-LineField -Line $netPciLine -Key 'vendor'
+  $device = Get-LineField -Line $netPciLine -Key 'device'
+  $class = Get-LineField -Line $netPciLine -Key 'class'
+  $family = Get-LineField -Line $netDriverLine -Key 'family'
+  if ([string]::IsNullOrWhiteSpace($family)) {
+    $driver = Get-LineField -Line $netPathLine -Key 'driver'
+    if ($driver -eq 'e1000' -or $driver -eq 'e1000-stub') {
+      $family = 'e1000'
+    } elseif ($driver -eq 'e1000e' -or $driver -eq 'e1000e-stub') {
+      $family = 'e1000e'
+    } elseif ($pciPresent) {
+      $family = 'unsupported'
+    } else {
+      $family = 'none'
+    }
+  }
+  $bind = Get-LineField -Line $netDriverLine -Key 'bind'
+  if ([string]::IsNullOrWhiteSpace($bind)) {
+    if ($netPathLine.Contains('lane=ready')) {
+      $bind = 'ready'
+    } elseif ($pciPresent -and ($family -eq 'e1000' -or $family -eq 'e1000e')) {
+      $bind = 'degraded'
+    } else {
+      $bind = 'missing'
+    }
+  }
+  $linkState = Get-LineField -Line $netLinkLine -Key 'state'
+  if ([string]::IsNullOrWhiteSpace($linkState)) {
+    $linkState = 'unknown'
+  }
+  $mac = Get-LineField -Line $netMacLine -Key 'mac'
+  if ([string]::IsNullOrWhiteSpace($mac)) {
+    $mac = '00:00:00:00:00:00'
+  }
+  $mode = Get-LineField -Line $netLinkLine -Key 'mode'
+  $sessionText = $SessionPath.Replace('\', '/').ToLowerInvariant()
+  if ($sessionText.Contains('/artifacts/physical_bringup/') -and -not (Test-VirtualizedLogPath -CapturedLogPath $CapturedLogPath) -and $pciPresent) {
+    $mode = 'physical-candidate'
+  } elseif ([string]::IsNullOrWhiteSpace($mode)) {
+    if (-not $pciPresent) {
+      $mode = 'soft-loop'
+    } elseif ($bind -eq 'ready') {
+      $mode = 'external'
+    } else {
+      $mode = 'offline'
+    }
+  }
+  $blocker = Get-LineField -Line $netDriverLine -Key 'blocker'
+  if ([string]::IsNullOrWhiteSpace($blocker)) {
+    if (-not $pciPresent) {
+      $blocker = 'nic-not-present'
+    } elseif ($family -eq 'unsupported') {
+      $blocker = 'unsupported-nic-family'
+    } elseif ($bind -eq 'denied') {
+      $blocker = 'driver-bind-denied'
+    } elseif ($bind -ne 'ready') {
+      $blocker = 'pci-mmio-map-failed'
+    } elseif ($linkState -eq 'down') {
+      $blocker = 'link-up-missing'
+    } else {
+      $blocker = 'none'
+    }
+  }
+  $consequence = 'degraded'
+  if ($blocker -eq 'none') {
+    $consequence = 'continue'
+  }
+  return @{
+    pci_nic_present = $(if ($pciPresent) { 'yes' } else { 'no' })
+    nic_vendor_id = $(if ([string]::IsNullOrWhiteSpace($vendor)) { 'none' } else { $vendor })
+    nic_device_id = $(if ([string]::IsNullOrWhiteSpace($device)) { 'none' } else { $device })
+    nic_class = $(if ([string]::IsNullOrWhiteSpace($class)) { 'none' } else { $class })
+    nic_driver_family = $family
+    nic_bind = $bind
+    link_state = $linkState
+    mac_address = $mac
+    network_mode = $mode
+    runtime_consequence = $consequence
+    blocker = $blocker
+  }
+}
+
 function Write-PhysicalEvidenceManifest {
   param(
     [string]$SessionPath,
@@ -98,6 +221,7 @@ function Write-PhysicalEvidenceManifest {
   $machinePath = Join-Path $SessionPath 'machine.txt'
   $notesPath = Join-Path $SessionPath 'operator-notes.txt'
   $shaPath = Join-Path $SessionPath 'sha256.txt'
+  $network = Get-PhysicalNetworkManifestValues -SessionPath $SessionPath -CapturedLogPath $CapturedLogPath
   $lines = @(
     'schema=physical-evidence-v1'
     'target_support_cell=intel-x86_64+uefi+sata-ahci+gop+keyboard'
@@ -108,6 +232,17 @@ function Write-PhysicalEvidenceManifest {
     "operator_notes_sha256=$(Get-FileSha256Lower -Path $notesPath)"
     'machine=machine.txt'
     "machine_sha256=$(Get-FileSha256Lower -Path $machinePath)"
+    "pci_nic_present=$($network.pci_nic_present)"
+    "nic_vendor_id=$($network.nic_vendor_id)"
+    "nic_device_id=$($network.nic_device_id)"
+    "nic_class=$($network.nic_class)"
+    "nic_driver_family=$($network.nic_driver_family)"
+    "nic_bind=$($network.nic_bind)"
+    "link_state=$($network.link_state)"
+    "mac_address=$($network.mac_address)"
+    "network_mode=$($network.network_mode)"
+    "runtime_consequence=$($network.runtime_consequence)"
+    "blocker=$($network.blocker)"
   )
   if (Test-Path $shaPath -PathType Leaf) {
     $lines += 'boot_artifacts_sha256=sha256.txt'
@@ -180,7 +315,18 @@ function Add-PhysicalManifestBlockers {
     'operator_notes',
     'operator_notes_sha256',
     'machine',
-    'machine_sha256'
+    'machine_sha256',
+    'pci_nic_present',
+    'nic_vendor_id',
+    'nic_device_id',
+    'nic_class',
+    'nic_driver_family',
+    'nic_bind',
+    'link_state',
+    'mac_address',
+    'network_mode',
+    'runtime_consequence',
+    'blocker'
   )
   foreach ($key in $requiredKeys) {
     if (-not $manifestValues.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($manifestValues[$key])) {
@@ -195,6 +341,23 @@ function Add-PhysicalManifestBlockers {
   }
   if ($manifestValues.ContainsKey('evidence_scope') -and $manifestValues['evidence_scope'] -ne 'physical-candidate') {
     $Blockers.Add('evidence-manifest-evidence-scope-mismatch')
+  }
+  $enumRules = @{
+    pci_nic_present = @('yes', 'no')
+    nic_driver_family = @('e1000', 'e1000e', 'unsupported', 'none')
+    nic_bind = @('ready', 'missing', 'denied', 'degraded')
+    link_state = @('up', 'down', 'unknown')
+    network_mode = @('offline', 'soft-loop', 'external', 'physical-candidate')
+    runtime_consequence = @('continue', 'degraded', 'recovery', 'fatal')
+  }
+  foreach ($key in $enumRules.Keys) {
+    if (-not $manifestValues.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($manifestValues[$key])) {
+      continue
+    }
+    $value = $manifestValues[$key].ToString().Trim()
+    if ($enumRules[$key] -notcontains $value) {
+      $Blockers.Add("evidence-manifest-$($key.Replace('_', '-'))-invalid")
+    }
   }
 
   Add-ManifestFileBlockers -Values $manifestValues -SessionPath $SessionPath -FilenameKey 'capture_log' -HashKey 'capture_log_sha256' -ExpectedName ([System.IO.Path]::GetFileName($CapturedLogPath)) -Blockers $Blockers
@@ -487,6 +650,30 @@ $usbHidBlocker = Get-KeyValueLine -Lines $verdictText -Key 'usb_hid_blocker'
 if (-not $usbHidBlocker) {
   $usbHidBlocker = 'unknown'
 }
+$pciNicPresent = Get-KeyValueLine -Lines $verdictText -Key 'pci_nic_present'
+if (-not $pciNicPresent) {
+  $pciNicPresent = 'unknown'
+}
+$nicDriverFamily = Get-KeyValueLine -Lines $verdictText -Key 'nic_driver_family'
+if (-not $nicDriverFamily) {
+  $nicDriverFamily = 'unknown'
+}
+$nicBind = Get-KeyValueLine -Lines $verdictText -Key 'nic_bind'
+if (-not $nicBind) {
+  $nicBind = 'unknown'
+}
+$linkState = Get-KeyValueLine -Lines $verdictText -Key 'link_state'
+if (-not $linkState) {
+  $linkState = 'unknown'
+}
+$networkMode = Get-KeyValueLine -Lines $verdictText -Key 'network_mode'
+if (-not $networkMode) {
+  $networkMode = 'unknown'
+}
+$networkBlocker = Get-KeyValueLine -Lines $verdictText -Key 'network_blocker'
+if (-not $networkBlocker) {
+  $networkBlocker = 'unknown'
+}
 $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(missing)' }
 
 @(
@@ -497,6 +684,12 @@ $referenceName = if ($baselinePath) { Split-Path -Leaf $baselinePath } else { '(
   "physical_evidence_blockers=$physicalEvidenceBlockers"
   "usb_hid_bind_state=$usbHidBindState"
   "usb_hid_blocker=$usbHidBlocker"
+  "pci_nic_present=$pciNicPresent"
+  "nic_driver_family=$nicDriverFamily"
+  "nic_bind=$nicBind"
+  "link_state=$linkState"
+  "network_mode=$networkMode"
+  "network_blocker=$networkBlocker"
   "firmware=$firmware"
   "split_layer=$splitLayer"
   "priority_blocker=$priorityBlocker"

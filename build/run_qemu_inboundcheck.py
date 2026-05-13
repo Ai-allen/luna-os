@@ -212,6 +212,9 @@ def main() -> int:
     stdout = LOG_PATH.read_text(encoding="utf-8", errors="replace")
     required = [
         "setup.init ok: host and first user created",
+        "[DEVICE] net driver family=e1000 bind=ready",
+        "[DEVICE] net link state=up",
+        "mode=external raw=ethertype-88B5",
         "net.external state=ready scope=outbound-only",
         "net.external bytes=8 data=luna-ext",
         "net.external tx_packets=0->1",

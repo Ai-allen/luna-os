@@ -57,11 +57,13 @@ if ($hashTargets.Count -gt 0) {
   '7. If the board exposes serial, capture COM1 at 38400 8N1 and save raw log beside this checklist.'
   '8. Record storage mode, GOP result, keyboard path, and whether shell accepts input.'
   '9. Capture [DEVICE] * path and [DEVICE] * select lines so driver-family and selection basis can be compared against the virtualized baseline.'
-  '10. Keep photos of the final visible screen in this session directory.'
-  '11. Fill every operator-notes.txt key before finalization; empty keys keep physical_evidence_status=missing.'
-  '12. Run .\finalize-session.ps1 after saving serial-capture.log to generate firsthop-summary.txt / firsthop-classification.txt / firsthop-delta.txt.'
-  '13. Confirm firsthop-verdict.txt says evidence_scope=physical-candidate and physical_evidence_status=present before treating the result as real support-cell evidence.'
-  '14. Do not switch to NVMe/RAID/VMD during Milestone 1.'
+  '10. For physical network, capture [DEVICE] net pci / net driver / net link / net mac lines.'
+  '11. If testing raw Ethernet, direct-connect the target NIC to the control machine and capture eth.type == 0x88b5 or ether host <luna-mac>.'
+  '12. Keep photos of the final visible screen in this session directory.'
+  '13. Fill every operator-notes.txt key before finalization; empty keys keep physical_evidence_status=missing.'
+  '14. Run .\finalize-session.ps1 after saving serial-capture.log to generate firsthop-summary.txt / firsthop-classification.txt / firsthop-delta.txt.'
+  '15. Confirm firsthop-verdict.txt says evidence_scope=physical-candidate and physical_evidence_status=present before treating the result as real support-cell evidence.'
+  '16. Do not switch to NVMe/RAID/VMD during Milestone 1.'
 ) | Set-Content -Encoding ascii $checklistPath
 
 @(
@@ -75,6 +77,9 @@ if ($hashTargets.Count -gt 0) {
   'shell_ready=yes|no|not-reached'
   'gop_result=ready|missing|not-reached'
   'keyboard_result=ready|blocked|not-reached'
+  'network_connection=direct-control-pc|router|none'
+  'control_capture=wireshark|tcpdump|photo|none'
+  'nic_observed=8086:10d3|8086:100e|unsupported|none'
 ) | Set-Content -Encoding ascii $notesPath
 
 @(

@@ -251,6 +251,9 @@ def main() -> int:
     stdout = LOG_PATH.read_text(encoding="utf-8", errors="replace")
     required = [
         "setup.init ok: host and first user created",
+        "[DEVICE] net driver family=e1000 bind=ready",
+        "[DEVICE] net link state=up",
+        "mode=external raw=ethertype-88B5",
         "net.connect state=ready scope=external-message",
         "net.status state=ready transport=external-message peer=external",
         "net.status phase=connect last=ok tx_messages=0 tx_bytes=0 rx_messages=0 rx_bytes=0",
