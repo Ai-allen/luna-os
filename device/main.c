@@ -4153,6 +4153,12 @@ static uint8_t xhci_erdp_points_to_luna(uint64_t erdp) {
     return ptr >= base && ptr < limit;
 }
 
+static void xhci_clear_event_interrupt_status(void) {
+    xhci_runtime_write32(0x20u, 0x01u);
+    xhci_op_write32(0x04u, (1u << 3));
+    memory_barrier();
+}
+
 static void xhci_restore_event_ring_dequeue_if_needed(const char *phase) {
     uint64_t erdp = xhci_runtime_read64(0x38u);
     uint64_t want;
@@ -4161,6 +4167,11 @@ static void xhci_restore_event_ring_dequeue_if_needed(const char *phase) {
     }
     want = xhci_event_ring_current_addr() | (1u << 3);
     xhci_runtime_write64(0x38u, want);
+    xhci_clear_event_interrupt_status();
+    if (!xhci_erdp_points_to_luna(xhci_runtime_read64(0x38u))) {
+        xhci_runtime_write64(0x38u, want);
+        xhci_clear_event_interrupt_status();
+    }
     g_xhci_event_ring_ownership_conflicts += 1u;
     g_usb_hid_blocker = "firmware-xhci-ownership-conflict";
     if (g_xhci_event_ring_restore_log_budget != 0u) {
@@ -4187,6 +4198,7 @@ static void xhci_advance_event_ring(void) {
         0x38u,
         ((uint64_t)(uintptr_t)&g_xhci_event_ring[g_xhci_event_dequeue]) | (1u << 3)
     );
+    xhci_clear_event_interrupt_status();
 }
 
 static int xhci_poll_event(uint8_t wanted_type, struct xhci_trb *out, uint32_t timeout_us) {
@@ -5381,6 +5393,7 @@ static int xhci_init(void) {
     xhci_runtime_write32(0x28u, 1u);
     xhci_runtime_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_erst);
     xhci_runtime_write64(0x38u, ((uint64_t)(uintptr_t)g_xhci_event_ring) | (1u << 3));
+    xhci_clear_event_interrupt_status();
     xhci_runtime_write32(0x20u, 0x01u);
     xhci_op_write32(0x38u, g_xhci_max_slots < 8u ? g_xhci_max_slots : 8u);
 

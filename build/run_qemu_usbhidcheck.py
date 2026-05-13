@@ -55,10 +55,49 @@ def wait_for_log(required: list[str], timeout_seconds: float, forbidden: list[st
     raise RuntimeError(f"usbhidcheck missing expected output: {missing}")
 
 
-def send_keys_qmp(qmp: QmpSession, text: str) -> None:
-    for ch in text:
-        qmp.execute("human-monitor-command", {"command-line": f"sendkey {qmp_qcode_for_char(ch)}"})
-        time.sleep(0.08)
+def wait_for_marker_count(marker: str, minimum_count: int, timeout_seconds: float, forbidden: list[str]) -> str:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        text = read_log()
+        for needle in forbidden:
+            if needle in text:
+                raise RuntimeError(f"usbhidcheck observed failure output: {needle}")
+        if text.count(marker) >= minimum_count:
+            return text
+        time.sleep(0.02)
+    text = read_log()
+    if text.count(marker) < minimum_count:
+        raise RuntimeError(f"usbhidcheck missing expected output: {marker}")
+    return text
+
+
+def send_usb_hid_key(qmp: QmpSession, ch: str, key_hex: str, forbidden: list[str]) -> None:
+    device_marker = f"[DEVICE] input event src=usb-hid key={key_hex}"
+    user_marker = f"[USER] input lane src=keyboard key={key_hex}"
+    last_error: Exception | None = None
+    for _ in range(3):
+        text = read_log()
+        device_target = text.count(device_marker) + 1
+        user_target = text.count(user_marker) + 1
+        qmp.execute(
+            "human-monitor-command",
+            {"command-line": f"sendkey {qmp_qcode_for_char(ch)} 350"},
+        )
+        try:
+            wait_for_marker_count(device_marker, device_target, 12.0, forbidden)
+            wait_for_marker_count(user_marker, user_target, 4.0, forbidden)
+            return
+        except RuntimeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"usbhidcheck failed to inject USB-HID key={key_hex}")
+
+
+def send_help_over_usb_hid(qmp: QmpSession, forbidden: list[str]) -> None:
+    for ch, key_hex in (("h", "68"), ("e", "65"), ("l", "6C"), ("p", "70"), ("\r", "0A")):
+        send_usb_hid_key(qmp, ch, key_hex, forbidden)
+        time.sleep(0.12)
 
 
 def main() -> int:
@@ -143,6 +182,7 @@ def main() -> int:
                     "[USB] hid descriptor ready",
                     "[USB] interrupt endpoint ready",
                     "[USB] configuration set value=",
+                    "[USB] HID interrupt polling ready",
                     "[USB] interrupt poll armed",
                     "[DEVICE] input usb candidate ctrl=xhci hid=not-bound blocker=",
                     "[DEVICE] input usb host ctrl=xhci init=ready",
@@ -158,7 +198,8 @@ def main() -> int:
             if "[USER] session script cmd=" in boot_text:
                 raise RuntimeError("usbhidcheck unexpectedly used session script input")
 
-            send_keys_qmp(qmp, "help\r")
+            time.sleep(0.5)
+            send_help_over_usb_hid(qmp, forbidden)
             wait_for_log(
                 [
                     "[USB] HID interrupt report received",
