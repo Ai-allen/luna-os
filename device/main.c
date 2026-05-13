@@ -121,6 +121,34 @@ struct xhci_erst_entry {
     uint32_t reserved;
 } __attribute__((packed));
 
+#define XHCI_RING_TRBS 16u
+#define XHCI_RING_LINK_INDEX (XHCI_RING_TRBS - 1u)
+#define XHCI_CONTEXT_BYTES_MAX 64u
+#define XHCI_TRB_TYPE_SHIFT 10u
+#define XHCI_TRB_CYCLE 0x01u
+#define XHCI_TRB_LINK_TOGGLE 0x02u
+#define XHCI_TRB_ISP (1u << 2)
+#define XHCI_TRB_IOC (1u << 5)
+#define XHCI_TRB_IDT (1u << 6)
+#define XHCI_TRB_DIR_IN (1u << 16)
+#define XHCI_TRB_TYPE_NORMAL 1u
+#define XHCI_TRB_TYPE_SETUP_STAGE 2u
+#define XHCI_TRB_TYPE_DATA_STAGE 3u
+#define XHCI_TRB_TYPE_STATUS_STAGE 4u
+#define XHCI_TRB_TYPE_LINK 6u
+#define XHCI_TRB_TYPE_ENABLE_SLOT 9u
+#define XHCI_TRB_TYPE_ADDRESS_DEVICE 11u
+#define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT 12u
+#define XHCI_TRB_TYPE_TRANSFER_EVENT 32u
+#define XHCI_TRB_TYPE_COMMAND_COMPLETION_EVENT 33u
+#define XHCI_COMPLETION_SUCCESS 1u
+#define XHCI_COMPLETION_SHORT_PACKET 13u
+#define USB_DESC_DEVICE 0x01u
+#define USB_DESC_CONFIGURATION 0x02u
+#define USB_DESC_INTERFACE 0x04u
+#define USB_DESC_ENDPOINT 0x05u
+#define USB_DESC_HID 0x21u
+
 typedef uint64_t (MS_ABI *efi_block_rw_fn_t)(
     void *self,
     uint32_t media_id,
@@ -236,6 +264,11 @@ static uint8_t g_last_keyboard_event_source = 0u;
 static uint8_t g_key_queue[32];
 static uint32_t g_key_head = 0u;
 static uint32_t g_key_tail = 0u;
+static uint8_t g_usb_hid_key_queue[32];
+static uint32_t g_usb_hid_key_head = 0u;
+static uint32_t g_usb_hid_key_tail = 0u;
+static uint8_t g_usb_hid_report[8] __attribute__((aligned(64)));
+static uint8_t g_usb_hid_previous_report[8] __attribute__((aligned(64)));
 static uint8_t g_mouse_queue[64];
 static uint32_t g_mouse_head = 0u;
 static uint32_t g_mouse_tail = 0u;
@@ -274,6 +307,7 @@ static struct luna_pci_record g_net_pci = {0};
 static struct luna_pci_record g_platform_pci = {0};
 static uint8_t g_usb_input_pci_known = 0u;
 static uint8_t g_usb_hid_keyboard_ready = 0u;
+static uint8_t g_usb_hid_poll_ready = 0u;
 static uint8_t g_xhci_ready = 0u;
 static uint8_t g_xhci_port_ready = 0u;
 static uint8_t g_xhci_connected_port = 0u;
@@ -284,6 +318,28 @@ static uintptr_t g_xhci_mmio = 0u;
 static uint32_t g_xhci_op_offset = 0u;
 static uint32_t g_xhci_runtime_offset = 0u;
 static uint32_t g_xhci_doorbell_offset = 0u;
+static uint8_t g_xhci_context_size = 32u;
+static uint8_t g_xhci_command_enqueue = 0u;
+static uint8_t g_xhci_command_cycle = 1u;
+static uint8_t g_xhci_event_dequeue = 0u;
+static uint8_t g_xhci_event_cycle = 1u;
+static uint32_t g_xhci_event_ring_ownership_conflicts = 0u;
+static uint32_t g_xhci_event_ring_restore_log_budget = 8u;
+static uint8_t g_xhci_ep0_enqueue = 0u;
+static uint8_t g_xhci_ep0_cycle = 1u;
+static uint8_t g_xhci_interrupt_enqueue = 0u;
+static uint8_t g_xhci_interrupt_cycle = 1u;
+static uint8_t g_xhci_slot_id = 0u;
+static uint8_t g_usb_hid_config_value = 0u;
+static uint8_t g_usb_hid_interface_number = 0u;
+static uint8_t g_usb_hid_interrupt_ep_addr = 0u;
+static uint8_t g_usb_hid_interrupt_ep_id = 0u;
+static uint16_t g_usb_hid_interrupt_ep_max_packet = 0u;
+static uint8_t g_usb_hid_interrupt_ep_interval = 0u;
+static uint8_t g_usb_hid_interrupt_pending = 0u;
+static struct xhci_trb *g_usb_hid_interrupt_trb = 0;
+static uint64_t g_usb_hid_interrupt_armed_us = 0u;
+static uint32_t g_usb_hid_interrupt_debug_budget = 8u;
 static const char *g_usb_hid_blocker = "controller-driver-missing";
 static uint8_t g_virtio_kbd_bus = 0u;
 static uint8_t g_virtio_kbd_slot = 0u;
@@ -427,6 +483,12 @@ static struct xhci_trb g_xhci_command_ring[16] __attribute__((aligned(64)));
 static struct xhci_trb g_xhci_event_ring[16] __attribute__((aligned(64)));
 static struct xhci_erst_entry g_xhci_erst[1] __attribute__((aligned(64)));
 static uint64_t g_xhci_dcbaa[256] __attribute__((aligned(64)));
+static struct xhci_trb g_xhci_ep0_ring[16] __attribute__((aligned(64)));
+static struct xhci_trb g_xhci_interrupt_ring[16] __attribute__((aligned(64)));
+static uint8_t g_xhci_input_context[33u * XHCI_CONTEXT_BYTES_MAX] __attribute__((aligned(64)));
+static uint8_t g_xhci_device_context[32u * XHCI_CONTEXT_BYTES_MAX] __attribute__((aligned(64)));
+static uint8_t g_usb_device_desc[18] __attribute__((aligned(64)));
+static uint8_t g_usb_config_desc[256] __attribute__((aligned(64)));
 
 static uint16_t pci_vendor_id(uint8_t bus, uint8_t slot, uint8_t function);
 static uint8_t pci_header_type(uint8_t bus, uint8_t slot, uint8_t function);
@@ -472,6 +534,7 @@ static int xhci_init(void);
 static int virtio_keyboard_init(void);
 static uint8_t virtio_keyboard_poll_byte(void);
 static void zero_bytes(void *dst, size_t len);
+static uint8_t usb_hid_keyboard_poll_byte(void);
 
 static uint32_t display_lane_flags(void) {
     uint32_t flags = LUNA_LANE_FLAG_PRESENT | LUNA_LANE_FLAG_READY | LUNA_LANE_FLAG_BOOT;
@@ -607,6 +670,9 @@ static uint32_t keyboard_driver_family(void) {
     if (g_virtio_keyboard_ready != 0u) {
         return LUNA_LANE_DRIVER_VIRTIO_KEYBOARD;
     }
+    if (g_usb_hid_poll_ready != 0u) {
+        return LUNA_LANE_DRIVER_USB_HID_KEYBOARD;
+    }
     return LUNA_LANE_DRIVER_I8042_KEYBOARD;
 }
 
@@ -620,6 +686,9 @@ static const char *input_driver_name(uint32_t family) {
     }
     if (family == LUNA_LANE_DRIVER_I8042_KEYBOARD) {
         return "i8042-kbd";
+    }
+    if (family == LUNA_LANE_DRIVER_USB_HID_KEYBOARD) {
+        return "usb-hid";
     }
     if (family == LUNA_LANE_DRIVER_I8042_MOUSE) {
         return "i8042-mouse";
@@ -635,6 +704,7 @@ enum {
     INPUT_EVENT_SOURCE_VIRTIO = 1u,
     INPUT_EVENT_SOURCE_I8042 = 2u,
     INPUT_EVENT_SOURCE_OPERATOR = 3u,
+    INPUT_EVENT_SOURCE_USB_HID = 4u,
 };
 
 static const char *input_event_source_name(uint8_t source) {
@@ -645,6 +715,8 @@ static const char *input_event_source_name(uint8_t source) {
             return "i8042-kbd";
         case INPUT_EVENT_SOURCE_OPERATOR:
             return "serial-operator";
+        case INPUT_EVENT_SOURCE_USB_HID:
+            return "usb-hid";
         default:
             return "unknown";
     }
@@ -886,6 +958,26 @@ static uint8_t dequeue_key(void) {
     return value;
 }
 
+static void usb_hid_enqueue_key(uint8_t value) {
+    uint32_t next = (g_usb_hid_key_tail + 1u) % (uint32_t)(sizeof(g_usb_hid_key_queue));
+    if (next == g_usb_hid_key_head) {
+        g_usb_hid_blocker = "input-queue-full";
+        return;
+    }
+    g_usb_hid_key_queue[g_usb_hid_key_tail] = value;
+    g_usb_hid_key_tail = next;
+}
+
+static uint8_t usb_hid_dequeue_key(void) {
+    uint8_t value;
+    if (g_usb_hid_key_head == g_usb_hid_key_tail) {
+        return 0u;
+    }
+    value = g_usb_hid_key_queue[g_usb_hid_key_head];
+    g_usb_hid_key_head = (g_usb_hid_key_head + 1u) % (uint32_t)(sizeof(g_usb_hid_key_queue));
+    return value;
+}
+
 static void enqueue_mouse(uint8_t value) {
     uint32_t next = (g_mouse_tail + 1u) % (uint32_t)(sizeof(g_mouse_queue));
     if (next == g_mouse_head) {
@@ -1100,9 +1192,15 @@ static void ps2_pump(uint32_t limit) {
 
 static uint8_t keyboard_poll_byte(void) {
     uint8_t virtio_value = virtio_keyboard_poll_byte();
+    uint8_t usb_value;
     if (virtio_value != 0u) {
         g_last_keyboard_event_source = INPUT_EVENT_SOURCE_VIRTIO;
         return virtio_value;
+    }
+    usb_value = usb_hid_keyboard_poll_byte();
+    if (usb_value != 0u) {
+        g_last_keyboard_event_source = INPUT_EVENT_SOURCE_USB_HID;
+        return usb_value;
     }
     uint8_t value = dequeue_key();
     if (value != 0u) {
@@ -2279,7 +2377,8 @@ static uint32_t driver_bind_blocker_flags(uint32_t driver_class, uint32_t driver
             }
             return LUNA_DRIVER_BLOCKER_NONE;
         case LUNA_DRIVER_CLASS_INPUT_MIN:
-            if (driver_family != LUNA_LANE_DRIVER_VIRTIO_KEYBOARD) {
+            if (driver_family != LUNA_LANE_DRIVER_VIRTIO_KEYBOARD
+                && driver_family != LUNA_LANE_DRIVER_USB_HID_KEYBOARD) {
                 return LUNA_DRIVER_BLOCKER_INPUT_LEGACY_ONLY;
             }
             return LUNA_DRIVER_BLOCKER_NONE;
@@ -3044,6 +3143,9 @@ static const char *display_selection_basis_name(void) {
 static const char *input_selection_basis_name(void) {
     if (g_virtio_keyboard_ready != 0u) {
         return "virtio-kbd";
+    }
+    if (g_usb_hid_poll_ready != 0u) {
+        return "usb-hid";
     }
     if (g_ps2_controller_present != 0u) {
         return "i8042";
@@ -3933,17 +4035,23 @@ static void xhci_op_write32(uint32_t offset, uint32_t value) {
 }
 
 static void xhci_op_write64(uint32_t offset, uint64_t value) {
-    xhci_op_write32(offset + 4u, (uint32_t)(value >> 32));
     xhci_op_write32(offset, (uint32_t)(value & 0xFFFFFFFFu));
+    xhci_op_write32(offset + 4u, (uint32_t)(value >> 32));
 }
 
 static void xhci_runtime_write32(uint32_t offset, uint32_t value) {
     xhci_write32(g_xhci_runtime_offset + offset, value);
 }
 
+static uint64_t xhci_runtime_read64(uint32_t offset) {
+    uint32_t low = xhci_read32(g_xhci_runtime_offset + offset);
+    uint32_t high = xhci_read32(g_xhci_runtime_offset + offset + 4u);
+    return ((uint64_t)high << 32) | (uint64_t)low;
+}
+
 static void xhci_runtime_write64(uint32_t offset, uint64_t value) {
-    xhci_runtime_write32(offset + 4u, (uint32_t)(value >> 32));
     xhci_runtime_write32(offset, (uint32_t)(value & 0xFFFFFFFFu));
+    xhci_runtime_write32(offset + 4u, (uint32_t)(value >> 32));
 }
 
 static uint32_t xhci_port_offset(uint8_t port) {
@@ -3995,6 +4103,1040 @@ static int xhci_wait_status(uint32_t mask, int want_set) {
         return (status & mask) == mask;
     }
     return (status & mask) == 0u;
+}
+
+static void xhci_delay_us(uint32_t delay_us) {
+    uint64_t start_us = clock_microseconds();
+    for (uint32_t loops = 0u; loops < 100000000u; ++loops) {
+        uint64_t now_us = clock_microseconds();
+        if (now_us > start_us && (now_us - start_us) >= delay_us) {
+            return;
+        }
+        __asm__ volatile ("pause");
+    }
+}
+
+static uint16_t usb_read16(const uint8_t *src) {
+    return (uint16_t)src[0] | (uint16_t)((uint16_t)src[1] << 8);
+}
+
+static uint32_t xhci_trb_type(uint32_t control) {
+    return (control >> XHCI_TRB_TYPE_SHIFT) & 0x3Fu;
+}
+
+static void xhci_ring_doorbell(uint8_t slot_id, uint8_t target) {
+    xhci_write32(g_xhci_doorbell_offset + ((uint32_t)slot_id * 4u), (uint32_t)target);
+}
+
+static uint32_t *xhci_context_words(uint8_t *base, uint8_t index) {
+    return (uint32_t *)(void *)(base + ((uint32_t)index * (uint32_t)g_xhci_context_size));
+}
+
+static uint16_t xhci_default_ep0_max_packet(void) {
+    if (g_xhci_port_speed == 4u) {
+        return 512u;
+    }
+    if (g_xhci_port_speed == 2u || g_xhci_port_speed == 1u) {
+        return 8u;
+    }
+    return 64u;
+}
+
+static uint64_t xhci_event_ring_current_addr(void) {
+    return (uint64_t)(uintptr_t)&g_xhci_event_ring[g_xhci_event_dequeue];
+}
+
+static uint8_t xhci_erdp_points_to_luna(uint64_t erdp) {
+    uint64_t ptr = erdp & ~0x0FULL;
+    uint64_t base = (uint64_t)(uintptr_t)g_xhci_event_ring;
+    uint64_t limit = base + (uint64_t)sizeof(g_xhci_event_ring);
+    return ptr >= base && ptr < limit;
+}
+
+static void xhci_restore_event_ring_dequeue_if_needed(const char *phase) {
+    uint64_t erdp = xhci_runtime_read64(0x38u);
+    uint64_t want;
+    if (xhci_erdp_points_to_luna(erdp)) {
+        return;
+    }
+    want = xhci_event_ring_current_addr() | (1u << 3);
+    xhci_runtime_write64(0x38u, want);
+    g_xhci_event_ring_ownership_conflicts += 1u;
+    g_usb_hid_blocker = "firmware-xhci-ownership-conflict";
+    if (g_xhci_event_ring_restore_log_budget != 0u) {
+        serial_write("[XHCI] event ring ownership restored phase=");
+        serial_write(phase);
+        serial_write(" erdp=");
+        serial_write_hex64(erdp);
+        serial_write(" want=");
+        serial_write_hex64(want);
+        serial_write(" conflicts=");
+        serial_write_hex32(g_xhci_event_ring_ownership_conflicts);
+        serial_write(" blocker=firmware-xhci-ownership-conflict\r\n");
+        g_xhci_event_ring_restore_log_budget -= 1u;
+    }
+}
+
+static void xhci_advance_event_ring(void) {
+    g_xhci_event_dequeue += 1u;
+    if (g_xhci_event_dequeue >= XHCI_RING_TRBS) {
+        g_xhci_event_dequeue = 0u;
+        g_xhci_event_cycle ^= 1u;
+    }
+    xhci_runtime_write64(
+        0x38u,
+        ((uint64_t)(uintptr_t)&g_xhci_event_ring[g_xhci_event_dequeue]) | (1u << 3)
+    );
+}
+
+static int xhci_poll_event(uint8_t wanted_type, struct xhci_trb *out, uint32_t timeout_us) {
+    uint64_t start_us = clock_microseconds();
+    xhci_restore_event_ring_dequeue_if_needed("event-wait");
+    for (uint32_t loops = 0u; loops < 100000000u; ++loops) {
+        volatile struct xhci_trb *event = &g_xhci_event_ring[g_xhci_event_dequeue];
+        uint32_t control = event->control;
+        if ((uint8_t)(control & XHCI_TRB_CYCLE) == g_xhci_event_cycle) {
+            struct xhci_trb snapshot;
+            snapshot.parameter = event->parameter;
+            snapshot.status = event->status;
+            snapshot.control = control;
+            xhci_advance_event_ring();
+            if (wanted_type == 0u || xhci_trb_type(snapshot.control) == wanted_type) {
+                if (out != 0) {
+                    *out = snapshot;
+                }
+                return 1;
+            }
+            continue;
+        }
+        if ((loops & 0x3FFu) == 0u) {
+            uint64_t now_us = clock_microseconds();
+            xhci_restore_event_ring_dequeue_if_needed("event-wait");
+            if (now_us > start_us && (now_us - start_us) > timeout_us) {
+                break;
+            }
+        }
+        __asm__ volatile ("pause");
+    }
+    return 0;
+}
+
+static void xhci_advance_command_ring(void) {
+    g_xhci_command_enqueue += 1u;
+    if (g_xhci_command_enqueue >= XHCI_RING_LINK_INDEX) {
+        g_xhci_command_ring[XHCI_RING_LINK_INDEX].parameter =
+            (uint64_t)(uintptr_t)g_xhci_command_ring;
+        g_xhci_command_ring[XHCI_RING_LINK_INDEX].status = 0u;
+        g_xhci_command_ring[XHCI_RING_LINK_INDEX].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_LINK_TOGGLE |
+            (uint32_t)(g_xhci_command_cycle & XHCI_TRB_CYCLE);
+        memory_barrier();
+        g_xhci_command_enqueue = 0u;
+        g_xhci_command_cycle ^= 1u;
+    }
+}
+
+static void xhci_log_command_event_timeout(uint32_t control) {
+    serial_write("[XHCI] command event timeout type=");
+    serial_write_hex8((uint8_t)xhci_trb_type(control));
+    serial_write(" deq=");
+    serial_write_hex8(g_xhci_event_dequeue);
+    serial_write("/");
+    serial_write_hex8(g_xhci_event_cycle);
+    serial_write(" cenq=");
+    serial_write_hex8(g_xhci_command_enqueue);
+    serial_write("/");
+    serial_write_hex8(g_xhci_command_cycle);
+    serial_write(" cmd=");
+    serial_write_hex32(xhci_op_read32(0x00u));
+    serial_write(" sts=");
+    serial_write_hex32(xhci_op_read32(0x04u));
+    serial_write(" crcr=");
+    serial_write_hex32(xhci_op_read32(0x18u));
+    serial_write("/");
+    serial_write_hex32(xhci_op_read32(0x1Cu));
+    serial_write(" iman=");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x20u));
+    serial_write(" erdp=");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x38u));
+    serial_write("/");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x3Cu));
+    for (uint8_t index = 0u; index < 8u; ++index) {
+        serial_write(" evt");
+        serial_write_hex8(index);
+        serial_write("=");
+        serial_write_hex32(g_xhci_event_ring[index].status);
+        serial_write("/");
+        serial_write_hex32(g_xhci_event_ring[index].control);
+    }
+    serial_write("\r\n");
+}
+
+static int xhci_submit_command(uint64_t parameter, uint32_t status, uint32_t control, struct xhci_trb *completion) {
+    struct xhci_trb event;
+    struct xhci_trb *slot;
+    if (g_xhci_command_enqueue >= XHCI_RING_LINK_INDEX) {
+        g_usb_hid_blocker = "command-ring-full";
+        return 0;
+    }
+    slot = &g_xhci_command_ring[g_xhci_command_enqueue];
+    slot->parameter = parameter;
+    slot->status = status;
+    memory_barrier();
+    slot->control = (control & ~XHCI_TRB_CYCLE) | (uint32_t)(g_xhci_command_cycle & XHCI_TRB_CYCLE);
+    memory_barrier();
+    xhci_restore_event_ring_dequeue_if_needed("command-doorbell");
+    xhci_ring_doorbell(0u, 0u);
+    xhci_advance_command_ring();
+    if (!xhci_poll_event(XHCI_TRB_TYPE_COMMAND_COMPLETION_EVENT, &event, 1000000u)) {
+        g_usb_hid_blocker = g_xhci_event_ring_ownership_conflicts != 0u ?
+            "firmware-xhci-ownership-conflict" : "command-event-timeout";
+        xhci_log_command_event_timeout(control);
+        return 0;
+    }
+    if (completion != 0) {
+        *completion = event;
+    }
+    return ((event.status >> 24) & 0xFFu) == XHCI_COMPLETION_SUCCESS;
+}
+
+static int xhci_enable_slot(uint8_t *slot_id) {
+    struct xhci_trb completion = {0u, 0u, 0u};
+    uint8_t slot;
+    g_usb_hid_blocker = "slot-enable-missing";
+    if (!xhci_submit_command(
+        0u,
+        0u,
+        (XHCI_TRB_TYPE_ENABLE_SLOT << XHCI_TRB_TYPE_SHIFT),
+        &completion
+    )) {
+        serial_write("[XHCI] enable slot blocked code=");
+        serial_write_hex8((uint8_t)((completion.status >> 24) & 0xFFu));
+        serial_write("\r\n");
+        return 0;
+    }
+    slot = (uint8_t)((completion.control >> 24) & 0xFFu);
+    if (slot == 0u || slot >= 255u) {
+        g_usb_hid_blocker = "slot-enable-invalid";
+        return 0;
+    }
+    *slot_id = slot;
+    g_xhci_slot_id = slot;
+    serial_write("[XHCI] slot enabled slot=");
+    serial_write_hex8(slot);
+    serial_write("\r\n");
+    return 1;
+}
+
+static void xhci_ep0_ring_init(void) {
+    zero_bytes(g_xhci_ep0_ring, sizeof(g_xhci_ep0_ring));
+    g_xhci_ep0_enqueue = 0u;
+    g_xhci_ep0_cycle = 1u;
+    g_xhci_ep0_ring[XHCI_RING_LINK_INDEX].parameter = (uint64_t)(uintptr_t)g_xhci_ep0_ring;
+    g_xhci_ep0_ring[XHCI_RING_LINK_INDEX].status = 0u;
+    g_xhci_ep0_ring[XHCI_RING_LINK_INDEX].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_LINK_TOGGLE | XHCI_TRB_CYCLE;
+}
+
+static void xhci_interrupt_ring_init(void) {
+    zero_bytes(g_xhci_interrupt_ring, sizeof(g_xhci_interrupt_ring));
+    zero_bytes(g_usb_hid_report, sizeof(g_usb_hid_report));
+    zero_bytes(g_usb_hid_previous_report, sizeof(g_usb_hid_previous_report));
+    g_xhci_interrupt_enqueue = 0u;
+    g_xhci_interrupt_cycle = 1u;
+    g_usb_hid_interrupt_pending = 0u;
+    g_usb_hid_interrupt_trb = 0;
+    g_usb_hid_interrupt_armed_us = 0u;
+    g_usb_hid_interrupt_debug_budget = 8u;
+    g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].parameter = (uint64_t)(uintptr_t)g_xhci_interrupt_ring;
+    g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].status = 0u;
+    g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_LINK_TOGGLE | XHCI_TRB_CYCLE;
+}
+
+static void xhci_prepare_address_context(uint8_t slot_id) {
+    uint32_t *input_control;
+    uint32_t *slot_context;
+    uint32_t *ep0_context;
+    uint64_t ep0_dequeue;
+    uint16_t max_packet = xhci_default_ep0_max_packet();
+
+    zero_bytes(g_xhci_input_context, sizeof(g_xhci_input_context));
+    zero_bytes(g_xhci_device_context, sizeof(g_xhci_device_context));
+    xhci_ep0_ring_init();
+
+    g_xhci_dcbaa[slot_id] = (uint64_t)(uintptr_t)g_xhci_device_context;
+
+    input_control = xhci_context_words(g_xhci_input_context, 0u);
+    slot_context = xhci_context_words(g_xhci_input_context, 1u);
+    ep0_context = xhci_context_words(g_xhci_input_context, 2u);
+
+    input_control[1] = 0x00000003u;
+    slot_context[0] = ((uint32_t)g_xhci_port_speed << 20) | (1u << 27);
+    slot_context[1] = (uint32_t)g_xhci_connected_port << 16;
+    ep0_context[1] = (3u << 1) | (4u << 3) | ((uint32_t)max_packet << 16);
+    ep0_dequeue = ((uint64_t)(uintptr_t)g_xhci_ep0_ring) | 1u;
+    ep0_context[2] = (uint32_t)(ep0_dequeue & 0xFFFFFFFFu);
+    ep0_context[3] = (uint32_t)(ep0_dequeue >> 32);
+    ep0_context[4] = 8u;
+    memory_barrier();
+}
+
+static int xhci_address_device(uint8_t slot_id) {
+    struct xhci_trb completion = {0u, 0u, 0u};
+    g_usb_hid_blocker = "address-device-missing";
+    xhci_prepare_address_context(slot_id);
+    if (!xhci_submit_command(
+        (uint64_t)(uintptr_t)g_xhci_input_context,
+        0u,
+        (XHCI_TRB_TYPE_ADDRESS_DEVICE << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24),
+        &completion
+    )) {
+        serial_write("[XHCI] address device blocked slot=");
+        serial_write_hex8(slot_id);
+        serial_write(" code=");
+        serial_write_hex8((uint8_t)((completion.status >> 24) & 0xFFu));
+        serial_write("\r\n");
+        return 0;
+    }
+    serial_write("[XHCI] address device ready slot=");
+    serial_write_hex8(slot_id);
+    serial_write("\r\n");
+    xhci_delay_us(10000u);
+    return 1;
+}
+
+static int xhci_configure_hid_interrupt_endpoint(uint8_t slot_id) {
+    struct xhci_trb completion = {0u, 0u, 0u};
+    uint32_t *input_control;
+    uint32_t *slot_context;
+    uint32_t *ep_context;
+    uint64_t dequeue;
+    uint8_t interval;
+    uint16_t max_packet = g_usb_hid_interrupt_ep_max_packet;
+
+    if (g_usb_hid_interrupt_ep_id == 0u || g_usb_hid_interrupt_ep_id >= 32u) {
+        g_usb_hid_blocker = "interrupt-endpoint-context-invalid";
+        return 0;
+    }
+    if (max_packet == 0u) {
+        max_packet = 8u;
+    }
+
+    zero_bytes(g_xhci_input_context, sizeof(g_xhci_input_context));
+    xhci_interrupt_ring_init();
+
+    input_control = xhci_context_words(g_xhci_input_context, 0u);
+    slot_context = xhci_context_words(g_xhci_input_context, 1u);
+    ep_context = xhci_context_words(g_xhci_input_context, (uint8_t)(g_usb_hid_interrupt_ep_id + 1u));
+
+    input_control[1] = (1u << 0) | (1u << g_usb_hid_interrupt_ep_id);
+    slot_context[0] =
+        ((uint32_t)g_xhci_port_speed << 20) |
+        ((uint32_t)g_usb_hid_interrupt_ep_id << 27);
+    slot_context[1] = (uint32_t)g_xhci_connected_port << 16;
+
+    interval = g_usb_hid_interrupt_ep_interval == 0u ? 0u : (uint8_t)(g_usb_hid_interrupt_ep_interval - 1u);
+    dequeue = ((uint64_t)(uintptr_t)g_xhci_interrupt_ring) | 1u;
+    ep_context[0] = (uint32_t)interval << 16;
+    ep_context[1] = (3u << 1) | (7u << 3) | ((uint32_t)max_packet << 16);
+    ep_context[2] = (uint32_t)(dequeue & 0xFFFFFFFFu);
+    ep_context[3] = (uint32_t)(dequeue >> 32);
+    ep_context[4] = max_packet;
+    memory_barrier();
+
+    g_usb_hid_blocker = "interrupt-endpoint-configure-missing";
+    if (!xhci_submit_command(
+        (uint64_t)(uintptr_t)g_xhci_input_context,
+        0u,
+        (XHCI_TRB_TYPE_CONFIGURE_ENDPOINT << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24),
+        &completion
+    )) {
+        serial_write("[XHCI] configure endpoint blocked dci=");
+        serial_write_hex8(g_usb_hid_interrupt_ep_id);
+        serial_write(" code=");
+        serial_write_hex8((uint8_t)((completion.status >> 24) & 0xFFu));
+        serial_write("\r\n");
+        return 0;
+    }
+    serial_write("[XHCI] interrupt endpoint context ready dci=");
+    serial_write_hex8(g_usb_hid_interrupt_ep_id);
+    serial_write(" ep=");
+    serial_write_hex8(g_usb_hid_interrupt_ep_addr);
+    serial_write("\r\n");
+    return 1;
+}
+
+static int xhci_ep0_has_space(uint8_t trbs) {
+    return (uint32_t)g_xhci_ep0_enqueue + (uint32_t)trbs <= XHCI_RING_LINK_INDEX;
+}
+
+static struct xhci_trb *xhci_ep0_enqueue_trb(uint64_t parameter, uint32_t status, uint32_t control) {
+    struct xhci_trb *slot = &g_xhci_ep0_ring[g_xhci_ep0_enqueue];
+    slot->parameter = parameter;
+    slot->status = status;
+    memory_barrier();
+    slot->control = (control & ~XHCI_TRB_CYCLE) | (uint32_t)(g_xhci_ep0_cycle & XHCI_TRB_CYCLE);
+    memory_barrier();
+    g_xhci_ep0_enqueue += 1u;
+    return slot;
+}
+
+static int xhci_poll_transfer_event_for_trb(
+    struct xhci_trb *first_trb,
+    struct xhci_trb *wanted_trb,
+    uint8_t accept_range,
+    struct xhci_trb *out,
+    uint32_t timeout_us
+) {
+    uint64_t start_us = clock_microseconds();
+    uint64_t first = (uint64_t)(uintptr_t)first_trb;
+    uint64_t wanted = (uint64_t)(uintptr_t)wanted_trb;
+    xhci_restore_event_ring_dequeue_if_needed("transfer-wait");
+    for (uint32_t loops = 0u; loops < 100000000u; ++loops) {
+        volatile struct xhci_trb *event = &g_xhci_event_ring[g_xhci_event_dequeue];
+        uint32_t control = event->control;
+        if ((uint8_t)(control & XHCI_TRB_CYCLE) == g_xhci_event_cycle) {
+            struct xhci_trb snapshot;
+            snapshot.parameter = event->parameter;
+            snapshot.status = event->status;
+            snapshot.control = control;
+            xhci_advance_event_ring();
+            if (xhci_trb_type(snapshot.control) == XHCI_TRB_TYPE_TRANSFER_EVENT) {
+                uint8_t code = (uint8_t)((snapshot.status >> 24) & 0xFFu);
+                uint64_t ptr = snapshot.parameter & ~0x0FULL;
+                if (ptr == wanted || (accept_range != 0u && ptr >= first && ptr <= wanted)) {
+                    if (out != 0) {
+                        *out = snapshot;
+                    }
+                    return 1;
+                }
+                if (code != XHCI_COMPLETION_SUCCESS && code != XHCI_COMPLETION_SHORT_PACKET) {
+                    serial_write("[XHCI] ep0 transfer event other ptr=");
+                    serial_write_hex64(snapshot.parameter);
+                    serial_write(" want=");
+                    serial_write_hex64(wanted);
+                    serial_write(" code=");
+                    serial_write_hex8(code);
+                    serial_write(" trb=");
+                    serial_write_hex32(snapshot.control);
+                    serial_write("\r\n");
+                    if (out != 0) {
+                        *out = snapshot;
+                    }
+                    return 1;
+                }
+            }
+            continue;
+        }
+        if ((loops & 0x3FFu) == 0u) {
+            uint64_t now_us = clock_microseconds();
+            xhci_restore_event_ring_dequeue_if_needed("transfer-wait");
+            if (now_us > start_us && (now_us - start_us) > timeout_us) {
+                break;
+            }
+        }
+        __asm__ volatile ("pause");
+    }
+    return 0;
+}
+
+static void xhci_advance_interrupt_ring(void) {
+    g_xhci_interrupt_enqueue += 1u;
+    if (g_xhci_interrupt_enqueue >= XHCI_RING_LINK_INDEX) {
+        g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].parameter =
+            (uint64_t)(uintptr_t)g_xhci_interrupt_ring;
+        g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].status = 0u;
+        g_xhci_interrupt_ring[XHCI_RING_LINK_INDEX].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_LINK_TOGGLE |
+            (uint32_t)(g_xhci_interrupt_cycle & XHCI_TRB_CYCLE);
+        memory_barrier();
+        g_xhci_interrupt_enqueue = 0u;
+        g_xhci_interrupt_cycle ^= 1u;
+    }
+}
+
+static struct xhci_trb *xhci_interrupt_enqueue_trb(uint64_t parameter, uint32_t status, uint32_t control) {
+    struct xhci_trb *slot;
+    if (g_xhci_interrupt_enqueue >= XHCI_RING_LINK_INDEX) {
+        return 0;
+    }
+    slot = &g_xhci_interrupt_ring[g_xhci_interrupt_enqueue];
+    slot->parameter = parameter;
+    slot->status = status;
+    memory_barrier();
+    slot->control = (control & ~XHCI_TRB_CYCLE) | (uint32_t)(g_xhci_interrupt_cycle & XHCI_TRB_CYCLE);
+    xhci_advance_interrupt_ring();
+    return slot;
+}
+
+static int xhci_schedule_hid_interrupt_transfer(void) {
+    uint16_t length = g_usb_hid_interrupt_ep_max_packet;
+    struct xhci_trb *trb;
+    if (g_usb_hid_interrupt_pending != 0u || g_usb_hid_poll_ready == 0u) {
+        return 1;
+    }
+    if (length == 0u || length > sizeof(g_usb_hid_report)) {
+        length = (uint16_t)sizeof(g_usb_hid_report);
+    }
+    zero_bytes(g_usb_hid_report, sizeof(g_usb_hid_report));
+    trb = xhci_interrupt_enqueue_trb(
+        (uint64_t)(uintptr_t)g_usb_hid_report,
+        (uint32_t)length,
+        (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_IOC |
+            XHCI_TRB_ISP
+    );
+    if (trb == 0) {
+        g_usb_hid_blocker = "interrupt-transfer-ring-full";
+        return 0;
+    }
+    memory_barrier();
+    g_usb_hid_interrupt_trb = trb;
+    g_usb_hid_interrupt_pending = 1u;
+    g_usb_hid_interrupt_armed_us = clock_microseconds();
+    g_usb_hid_blocker = "interrupt-transfer-pending";
+    serial_write("[USB] interrupt poll armed ep=");
+    serial_write_hex8(g_usb_hid_interrupt_ep_addr);
+    serial_write(" dci=");
+    serial_write_hex8(g_usb_hid_interrupt_ep_id);
+    serial_write(" len=");
+    serial_write_hex8((uint8_t)length);
+    serial_write(" interval=");
+    serial_write_hex8(g_usb_hid_interrupt_ep_interval);
+    serial_write(" trb=");
+    serial_write_hex64((uint64_t)(uintptr_t)trb);
+    serial_write("\r\n");
+    xhci_restore_event_ring_dequeue_if_needed("interrupt-doorbell");
+    xhci_ring_doorbell(g_xhci_slot_id, g_usb_hid_interrupt_ep_id);
+    return 1;
+}
+
+static void xhci_log_hid_interrupt_pending(uint32_t event_control) {
+    serial_write("[XHCI] interrupt pending no-event deq=");
+    serial_write_hex8(g_xhci_event_dequeue);
+    serial_write("/");
+    serial_write_hex8(g_xhci_event_cycle);
+    serial_write(" trb=");
+    serial_write_hex64((uint64_t)(uintptr_t)g_usb_hid_interrupt_trb);
+    serial_write(" cmd=");
+    serial_write_hex32(xhci_op_read32(0x00u));
+    serial_write(" sts=");
+    serial_write_hex32(xhci_op_read32(0x04u));
+    serial_write(" iman=");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x20u));
+    serial_write(" erdp=");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x38u));
+    serial_write("/");
+    serial_write_hex32(xhci_read32(g_xhci_runtime_offset + 0x3Cu));
+    serial_write(" evt=");
+    serial_write_hex32(g_xhci_event_ring[g_xhci_event_dequeue].status);
+    serial_write("/");
+    serial_write_hex32(event_control);
+    serial_write("\r\n");
+}
+
+static int xhci_poll_hid_interrupt_completion(struct xhci_trb *out) {
+    uint8_t consumed = 0u;
+    if (g_usb_hid_interrupt_pending == 0u || g_usb_hid_interrupt_trb == 0) {
+        return 0;
+    }
+    xhci_restore_event_ring_dequeue_if_needed("interrupt-wait");
+    while (consumed < XHCI_RING_TRBS) {
+        volatile struct xhci_trb *event = &g_xhci_event_ring[g_xhci_event_dequeue];
+        uint32_t control = event->control;
+        struct xhci_trb snapshot;
+        uint8_t code;
+        uint64_t ptr;
+        uint8_t event_ep;
+        uint8_t event_slot;
+        if ((uint8_t)(control & XHCI_TRB_CYCLE) != g_xhci_event_cycle) {
+            uint64_t now_us = clock_microseconds();
+            xhci_restore_event_ring_dequeue_if_needed("interrupt-wait");
+            if (g_usb_hid_interrupt_armed_us != 0u &&
+                now_us > g_usb_hid_interrupt_armed_us &&
+                now_us - g_usb_hid_interrupt_armed_us > 500000u &&
+                g_usb_hid_interrupt_debug_budget != 0u) {
+                g_usb_hid_blocker = "interrupt-transfer-event-timeout";
+                xhci_log_hid_interrupt_pending(control);
+                g_usb_hid_interrupt_debug_budget -= 1u;
+            }
+            return 0;
+        }
+        snapshot.parameter = event->parameter;
+        snapshot.status = event->status;
+        snapshot.control = control;
+        xhci_advance_event_ring();
+        consumed += 1u;
+        if (xhci_trb_type(snapshot.control) != XHCI_TRB_TYPE_TRANSFER_EVENT) {
+            continue;
+        }
+        code = (uint8_t)((snapshot.status >> 24) & 0xFFu);
+        ptr = snapshot.parameter & ~0x0FULL;
+        event_ep = (uint8_t)((snapshot.control >> 16) & 0x1Fu);
+        event_slot = (uint8_t)((snapshot.control >> 24) & 0xFFu);
+        if (ptr != (uint64_t)(uintptr_t)g_usb_hid_interrupt_trb ||
+            event_ep != g_usb_hid_interrupt_ep_id ||
+            event_slot != g_xhci_slot_id) {
+            if (g_usb_hid_interrupt_debug_budget != 0u) {
+                serial_write("[XHCI] interrupt event other ptr=");
+                serial_write_hex64(snapshot.parameter);
+                serial_write(" ep=");
+                serial_write_hex8(event_ep);
+                serial_write(" slot=");
+                serial_write_hex8(event_slot);
+                serial_write(" code=");
+                serial_write_hex8(code);
+                serial_write("\r\n");
+                g_usb_hid_interrupt_debug_budget -= 1u;
+            }
+            continue;
+        }
+        g_usb_hid_interrupt_pending = 0u;
+        g_usb_hid_interrupt_trb = 0;
+        if (out != 0) {
+            *out = snapshot;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static uint8_t usb_hid_report_contains(const uint8_t *report, uint8_t usage) {
+    for (uint8_t index = 2u; index < 8u; ++index) {
+        if (report[index] == usage) {
+            return 1u;
+        }
+    }
+    return 0u;
+}
+
+static uint8_t usb_hid_usage_to_luna_key(uint8_t usage) {
+    if (usage >= 0x04u && usage <= 0x1Du) {
+        return (uint8_t)('a' + (usage - 0x04u));
+    }
+    if (usage >= 0x1Eu && usage <= 0x26u) {
+        return (uint8_t)('1' + (usage - 0x1Eu));
+    }
+    switch (usage) {
+        case 0x27u: return '0';
+        case 0x28u: return '\n';
+        case 0x29u: return 0x1Bu;
+        case 0x2Au: return 8u;
+        case 0x2Bu: return '\t';
+        case 0x2Cu: return ' ';
+        case 0x2Du: return '-';
+        case 0x37u: return '.';
+        case 0x4Fu: return 0x94u;
+        case 0x50u: return 0x93u;
+        case 0x51u: return 0x92u;
+        case 0x52u: return 0x91u;
+        case 0x3Au: return 0x81u;
+        case 0x3Bu: return 0x82u;
+        case 0x3Cu: return 0x83u;
+        case 0x3Du: return 0x84u;
+        case 0x3Eu: return 0x85u;
+        case 0x3Fu: return 0x86u;
+        case 0x40u: return 0x87u;
+        case 0x41u: return 0x88u;
+        case 0x42u: return 0x89u;
+        default: return 0u;
+    }
+}
+
+static void usb_hid_process_report(uint8_t length) {
+    uint8_t enqueued = 0u;
+    serial_write("[USB] HID interrupt report received len=");
+    serial_write_hex8(length);
+    serial_write(" mod=");
+    serial_write_hex8(g_usb_hid_report[0]);
+    serial_write(" keys=");
+    for (uint8_t index = 2u; index < 8u; ++index) {
+        serial_write_hex8(g_usb_hid_report[index]);
+        if (index != 7u) {
+            serial_write("/");
+        }
+    }
+    serial_write("\r\n");
+    if (length < 8u) {
+        g_usb_hid_blocker = "hid-report-short";
+        return;
+    }
+    for (uint8_t index = 2u; index < 8u; ++index) {
+        uint8_t usage = g_usb_hid_report[index];
+        uint8_t key;
+        if (usage <= 0x03u || usb_hid_report_contains(g_usb_hid_previous_report, usage)) {
+            continue;
+        }
+        key = usb_hid_usage_to_luna_key(usage);
+        if (key == 0u) {
+            g_usb_hid_blocker = "keycode-mapping-missing";
+            serial_write("[USB] HID keycode mapping missing usage=");
+            serial_write_hex8(usage);
+            serial_write("\r\n");
+            continue;
+        }
+        usb_hid_enqueue_key(key);
+        enqueued = 1u;
+    }
+    copy_bytes(g_usb_hid_previous_report, g_usb_hid_report, sizeof(g_usb_hid_previous_report));
+    g_usb_hid_keyboard_ready = 1u;
+    if (enqueued != 0u) {
+        g_usb_hid_blocker = "input0-delivery-ready";
+    } else {
+        g_usb_hid_blocker = "hid-report-received";
+    }
+}
+
+static uint8_t usb_hid_keyboard_poll_byte(void) {
+    struct xhci_trb event;
+    uint8_t value = usb_hid_dequeue_key();
+    if (value != 0u) {
+        return value;
+    }
+    if (g_usb_hid_poll_ready == 0u) {
+        return 0u;
+    }
+    if (xhci_poll_hid_interrupt_completion(&event)) {
+        uint8_t code = (uint8_t)((event.status >> 24) & 0xFFu);
+        uint16_t requested = g_usb_hid_interrupt_ep_max_packet;
+        uint32_t remaining = event.status & 0x00FFFFFFu;
+        uint8_t actual = 0u;
+        if (requested == 0u || requested > sizeof(g_usb_hid_report)) {
+            requested = (uint16_t)sizeof(g_usb_hid_report);
+        }
+        if (remaining <= requested) {
+            actual = (uint8_t)(requested - (uint16_t)remaining);
+        }
+        if (code == XHCI_COMPLETION_SUCCESS || code == XHCI_COMPLETION_SHORT_PACKET) {
+            usb_hid_process_report(actual);
+        } else {
+            g_usb_hid_blocker = "interrupt-transfer-failed";
+            serial_write("[XHCI] interrupt transfer blocked code=");
+            serial_write_hex8(code);
+            serial_write(" trb=");
+            serial_write_hex32(event.control);
+            serial_write("\r\n");
+        }
+    }
+    if (g_usb_hid_interrupt_pending == 0u) {
+        (void)xhci_schedule_hid_interrupt_transfer();
+    }
+    return usb_hid_dequeue_key();
+}
+
+static void xhci_log_ep0_event_timeout(
+    uint8_t request,
+    uint16_t value,
+    uint16_t length,
+    struct xhci_trb *setup_trb,
+    struct xhci_trb *status_trb
+) {
+    volatile struct xhci_trb *event = &g_xhci_event_ring[g_xhci_event_dequeue];
+    serial_write("[XHCI] ep0 event timeout req=");
+    serial_write_hex8(request);
+    serial_write(" val=");
+    serial_write_hex16(value);
+    serial_write(" len=");
+    serial_write_hex16(length);
+    serial_write(" ep0=");
+    serial_write_hex8(g_xhci_ep0_enqueue);
+    serial_write("/");
+    serial_write_hex8(g_xhci_ep0_cycle);
+    serial_write(" ev=");
+    serial_write_hex8(g_xhci_event_dequeue);
+    serial_write("/");
+    serial_write_hex8(g_xhci_event_cycle);
+    serial_write(" sts=");
+    serial_write_hex32(xhci_op_read32(0x04u));
+    serial_write(" erdp=");
+    serial_write_hex64(xhci_runtime_read64(0x38u));
+    serial_write(" evt=");
+    serial_write_hex32(event->status);
+    serial_write("/");
+    serial_write_hex32(event->control);
+    serial_write(" setup=");
+    serial_write_hex64((uint64_t)(uintptr_t)setup_trb);
+    serial_write(" want=");
+    serial_write_hex64((uint64_t)(uintptr_t)status_trb);
+    serial_write("\r\n");
+}
+
+static int xhci_control_transfer(
+    uint8_t slot_id,
+    uint8_t request_type,
+    uint8_t request,
+    uint16_t value,
+    uint16_t index,
+    uint8_t *data,
+    uint16_t length
+) {
+    uint64_t setup;
+    uint32_t setup_transfer_type;
+    uint32_t status_direction;
+    struct xhci_trb event;
+    struct xhci_trb *setup_trb;
+    struct xhci_trb *status_trb;
+    uint8_t trb_count = length == 0u ? 2u : 3u;
+    uint8_t direction_in = (request_type & 0x80u) != 0u ? 1u : 0u;
+
+    if (!xhci_ep0_has_space(trb_count)) {
+        g_usb_hid_blocker = "ep0-transfer-ring-full";
+        return 0;
+    }
+    setup = (uint64_t)request_type |
+        ((uint64_t)request << 8) |
+        ((uint64_t)value << 16) |
+        ((uint64_t)index << 32) |
+        ((uint64_t)length << 48);
+    setup_transfer_type = length == 0u ? 0u : (direction_in != 0u ? 3u : 2u);
+    setup_trb = xhci_ep0_enqueue_trb(
+        setup,
+        8u,
+        (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_IDT |
+            (setup_transfer_type << 16)
+    );
+    if (length != 0u) {
+        xhci_ep0_enqueue_trb(
+            (uint64_t)(uintptr_t)data,
+            (uint32_t)length,
+            (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) |
+                (direction_in != 0u ? XHCI_TRB_DIR_IN : 0u)
+        );
+    }
+    status_direction = (length == 0u || direction_in == 0u) ? XHCI_TRB_DIR_IN : 0u;
+    status_trb = xhci_ep0_enqueue_trb(
+        0u,
+        0u,
+        (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_IOC |
+            status_direction
+    );
+    memory_barrier();
+    xhci_restore_event_ring_dequeue_if_needed("ep0-doorbell");
+    xhci_ring_doorbell(slot_id, 1u);
+    if (!xhci_poll_transfer_event_for_trb(setup_trb, status_trb, length == 0u ? 1u : 0u, &event, 2000000u)) {
+        g_usb_hid_blocker = g_xhci_event_ring_ownership_conflicts != 0u ?
+            "firmware-xhci-ownership-conflict" : "ep0-transfer-event-timeout";
+        xhci_log_ep0_event_timeout(request, value, length, setup_trb, status_trb);
+        return 0;
+    }
+    {
+        uint8_t code = (uint8_t)((event.status >> 24) & 0xFFu);
+        if (code != XHCI_COMPLETION_SUCCESS && code != XHCI_COMPLETION_SHORT_PACKET) {
+            g_usb_hid_blocker = "ep0-transfer-failed";
+            serial_write("[XHCI] ep0 transfer blocked code=");
+            serial_write_hex8(code);
+            serial_write(" trb=");
+            serial_write_hex32(event.control);
+            serial_write("\r\n");
+            return 0;
+        }
+    }
+    xhci_delay_us(1000u);
+    return 1;
+}
+
+static int xhci_control_get_descriptor(uint8_t slot_id, uint8_t dtype, uint8_t index, uint8_t *out, uint16_t len) {
+    return xhci_control_transfer(
+        slot_id,
+        0x80u,
+        0x06u,
+        (uint16_t)(((uint16_t)dtype << 8) | index),
+        0u,
+        out,
+        len
+    );
+}
+
+static int xhci_control_set_configuration(uint8_t slot_id, uint8_t config_value) {
+    return xhci_control_transfer(slot_id, 0x00u, 0x09u, config_value, 0u, 0, 0u);
+}
+
+static int xhci_control_hid_set_idle(uint8_t slot_id, uint8_t interface_number) {
+    return xhci_control_transfer(slot_id, 0x21u, 0x0Au, 0u, interface_number, 0, 0u);
+}
+
+static int xhci_control_hid_set_protocol(uint8_t slot_id, uint8_t interface_number) {
+    return xhci_control_transfer(slot_id, 0x21u, 0x0Bu, 0u, interface_number, 0, 0u);
+}
+
+static void usb_log_device_descriptor(void) {
+    serial_write("[USB] device descriptor ready vendor=");
+    serial_write_hex16(usb_read16(&g_usb_device_desc[8]));
+    serial_write(" product=");
+    serial_write_hex16(usb_read16(&g_usb_device_desc[10]));
+    serial_write(" class=");
+    serial_write_hex8(g_usb_device_desc[4]);
+    serial_write("/");
+    serial_write_hex8(g_usb_device_desc[5]);
+    serial_write("/");
+    serial_write_hex8(g_usb_device_desc[6]);
+    serial_write(" mps=");
+    serial_write_hex8(g_usb_device_desc[7]);
+    serial_write("\r\n");
+}
+
+static int usb_parse_hid_keyboard_config(uint16_t len, uint8_t *hid_seen, uint8_t *endpoint_seen) {
+    uint16_t offset = 0u;
+    uint8_t in_keyboard_interface = 0u;
+    *hid_seen = 0u;
+    *endpoint_seen = 0u;
+    if (len < 9u || g_usb_config_desc[0] < 9u || g_usb_config_desc[1] != USB_DESC_CONFIGURATION) {
+        return 0;
+    }
+    g_usb_hid_config_value = g_usb_config_desc[5];
+    while (offset + 2u <= len) {
+        uint8_t dlen = g_usb_config_desc[offset];
+        uint8_t dtype = g_usb_config_desc[offset + 1u];
+        if (dlen < 2u || offset + dlen > len) {
+            break;
+        }
+        if (dtype == USB_DESC_INTERFACE && dlen >= 9u) {
+            uint8_t klass = g_usb_config_desc[offset + 5u];
+            uint8_t subclass = g_usb_config_desc[offset + 6u];
+            uint8_t protocol = g_usb_config_desc[offset + 7u];
+            in_keyboard_interface = 0u;
+            if (klass == 0x03u && subclass == 0x01u && protocol == 0x01u) {
+                in_keyboard_interface = 1u;
+                *hid_seen = 1u;
+                g_usb_hid_interface_number = g_usb_config_desc[offset + 2u];
+                serial_write("[USB] hid keyboard interface ready iface=");
+                serial_write_hex8(g_usb_hid_interface_number);
+                serial_write(" alt=");
+                serial_write_hex8(g_usb_config_desc[offset + 3u]);
+                serial_write(" class=03/01/01\r\n");
+            }
+        } else if (dtype == USB_DESC_HID && in_keyboard_interface != 0u) {
+            serial_write("[USB] hid descriptor ready len=");
+            serial_write_hex8(dlen);
+            serial_write("\r\n");
+        } else if (dtype == USB_DESC_ENDPOINT && dlen >= 7u && in_keyboard_interface != 0u) {
+            uint8_t endpoint = g_usb_config_desc[offset + 2u];
+            uint8_t attributes = g_usb_config_desc[offset + 3u];
+            if ((endpoint & 0x80u) != 0u && (attributes & 0x03u) == 0x03u) {
+                uint8_t endpoint_number = endpoint & 0x0Fu;
+                *endpoint_seen = 1u;
+                g_usb_hid_interrupt_ep_addr = endpoint;
+                g_usb_hid_interrupt_ep_id = (uint8_t)(endpoint_number * 2u + 1u);
+                g_usb_hid_interrupt_ep_max_packet = usb_read16(&g_usb_config_desc[offset + 4u]);
+                g_usb_hid_interrupt_ep_interval = g_usb_config_desc[offset + 6u];
+                serial_write("[USB] interrupt endpoint ready ep=");
+                serial_write_hex8(g_usb_hid_interrupt_ep_addr);
+                serial_write(" dci=");
+                serial_write_hex8(g_usb_hid_interrupt_ep_id);
+                serial_write(" max=");
+                serial_write_hex16(g_usb_hid_interrupt_ep_max_packet);
+                serial_write(" interval=");
+                serial_write_hex8(g_usb_hid_interrupt_ep_interval);
+                serial_write("\r\n");
+                return 1;
+            }
+        }
+        offset = (uint16_t)(offset + dlen);
+    }
+    return *hid_seen != 0u;
+}
+
+static int xhci_enumerate_hid_keyboard(void) {
+    uint16_t total_len;
+    uint8_t hid_seen = 0u;
+    uint8_t endpoint_seen = 0u;
+
+    if (g_xhci_port_ready == 0u) {
+        return 0;
+    }
+    if (!xhci_enable_slot(&g_xhci_slot_id)) {
+        return 0;
+    }
+    if (!xhci_address_device(g_xhci_slot_id)) {
+        return 0;
+    }
+    g_usb_hid_blocker = "device-descriptor-missing";
+    zero_bytes(g_usb_device_desc, sizeof(g_usb_device_desc));
+    if (!xhci_control_get_descriptor(g_xhci_slot_id, USB_DESC_DEVICE, 0u, g_usb_device_desc, sizeof(g_usb_device_desc))) {
+        return 0;
+    }
+    if (g_usb_device_desc[0] < 18u || g_usb_device_desc[1] != USB_DESC_DEVICE) {
+        g_usb_hid_blocker = "device-descriptor-invalid";
+        return 0;
+    }
+    usb_log_device_descriptor();
+
+    g_usb_hid_blocker = "configuration-descriptor-missing";
+    zero_bytes(g_usb_config_desc, sizeof(g_usb_config_desc));
+    if (!xhci_control_get_descriptor(g_xhci_slot_id, USB_DESC_CONFIGURATION, 0u, g_usb_config_desc, 9u)) {
+        return 0;
+    }
+    if (g_usb_config_desc[0] < 9u || g_usb_config_desc[1] != USB_DESC_CONFIGURATION) {
+        g_usb_hid_blocker = "configuration-descriptor-invalid";
+        return 0;
+    }
+    total_len = usb_read16(&g_usb_config_desc[2]);
+    if (total_len > sizeof(g_usb_config_desc)) {
+        total_len = (uint16_t)sizeof(g_usb_config_desc);
+    }
+    if (total_len < 9u) {
+        g_usb_hid_blocker = "configuration-descriptor-invalid";
+        return 0;
+    }
+    if (!xhci_control_get_descriptor(g_xhci_slot_id, USB_DESC_CONFIGURATION, 0u, g_usb_config_desc, total_len)) {
+        return 0;
+    }
+    serial_write("[USB] config descriptor ready total=");
+    serial_write_hex16(total_len);
+    serial_write(" value=");
+    serial_write_hex8(g_usb_config_desc[5]);
+    serial_write("\r\n");
+
+    g_usb_hid_blocker = "hid-keyboard-interface-missing";
+    if (!usb_parse_hid_keyboard_config(total_len, &hid_seen, &endpoint_seen) || hid_seen == 0u) {
+        return 0;
+    }
+    if (endpoint_seen == 0u) {
+        g_usb_hid_blocker = "interrupt-endpoint-missing";
+        return 0;
+    }
+    g_usb_hid_blocker = "set-configuration-missing";
+    if (!xhci_control_set_configuration(g_xhci_slot_id, g_usb_hid_config_value)) {
+        g_usb_hid_blocker = "set-configuration-transfer-timeout";
+        return 0;
+    }
+    serial_write("[USB] configuration set value=");
+    serial_write_hex8(g_usb_hid_config_value);
+    serial_write("\r\n");
+
+    g_usb_hid_blocker = "hid-boot-protocol-missing";
+    if (!xhci_control_hid_set_protocol(g_xhci_slot_id, g_usb_hid_interface_number)) {
+        g_usb_hid_blocker = "hid-boot-protocol-transfer-timeout";
+        return 0;
+    }
+    serial_write("[USB] HID boot protocol set iface=");
+    serial_write_hex8(g_usb_hid_interface_number);
+    serial_write("\r\n");
+
+    g_usb_hid_blocker = "hid-idle-missing";
+    if (!xhci_control_hid_set_idle(g_xhci_slot_id, g_usb_hid_interface_number)) {
+        g_usb_hid_blocker = "hid-idle-transfer-timeout";
+        return 0;
+    }
+    serial_write("[USB] HID idle set iface=");
+    serial_write_hex8(g_usb_hid_interface_number);
+    serial_write("\r\n");
+
+    if (!xhci_configure_hid_interrupt_endpoint(g_xhci_slot_id)) {
+        return 0;
+    }
+    g_usb_hid_poll_ready = 1u;
+    g_usb_hid_blocker = "interrupt-endpoint-polling-missing";
+    serial_write("[USB] HID interrupt polling ready blocker=interrupt-endpoint-polling-missing\r\n");
+    if (!xhci_schedule_hid_interrupt_transfer()) {
+        return 0;
+    }
+    return 1;
 }
 
 static void xhci_legacy_handoff(uint32_t hccparams1) {
@@ -4059,6 +5201,12 @@ static int xhci_reset_connected_port(void) {
         portsc = xhci_read32(offset);
         g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
         if ((portsc & 0x02u) != 0u) {
+            if ((portsc & port_rwc_mask) != 0u) {
+                xhci_write32(offset, portsc);
+                xhci_delay_us(1000u);
+                portsc = xhci_read32(offset);
+                g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
+            }
             g_xhci_port_ready = 1u;
             g_usb_hid_blocker = "usb-enumeration-missing";
             serial_write("[XHCI] port ready port=");
@@ -4129,6 +5277,7 @@ static int xhci_init(void) {
     hcc1 = xhci_read32(0x10u);
     g_xhci_max_slots = (uint8_t)(hcs1 & 0xFFu);
     g_xhci_max_ports = (uint8_t)((hcs1 >> 24) & 0xFFu);
+    g_xhci_context_size = (hcc1 & (1u << 2)) != 0u ? 64u : 32u;
     scratchpads = ((hcs2 >> 27) & 0x1Fu) << 5;
     scratchpads |= (hcs2 >> 21) & 0x1Fu;
     if (scratchpads != 0u) {
@@ -4192,10 +5341,36 @@ static int xhci_init(void) {
     zero_bytes(g_xhci_event_ring, sizeof(g_xhci_event_ring));
     zero_bytes(g_xhci_erst, sizeof(g_xhci_erst));
     zero_bytes(g_xhci_dcbaa, sizeof(g_xhci_dcbaa));
+    zero_bytes(g_xhci_ep0_ring, sizeof(g_xhci_ep0_ring));
+    zero_bytes(g_xhci_interrupt_ring, sizeof(g_xhci_interrupt_ring));
+    zero_bytes(g_xhci_input_context, sizeof(g_xhci_input_context));
+    zero_bytes(g_xhci_device_context, sizeof(g_xhci_device_context));
+    zero_bytes(g_usb_hid_report, sizeof(g_usb_hid_report));
+    zero_bytes(g_usb_hid_previous_report, sizeof(g_usb_hid_previous_report));
+    g_xhci_command_enqueue = 0u;
+    g_xhci_command_cycle = 1u;
+    g_xhci_event_dequeue = 0u;
+    g_xhci_event_cycle = 1u;
+    g_xhci_event_ring_ownership_conflicts = 0u;
+    g_xhci_event_ring_restore_log_budget = 8u;
+    g_xhci_ep0_enqueue = 0u;
+    g_xhci_ep0_cycle = 1u;
+    g_xhci_interrupt_enqueue = 0u;
+    g_xhci_interrupt_cycle = 1u;
+    g_xhci_slot_id = 0u;
+    g_usb_hid_poll_ready = 0u;
+    g_usb_hid_keyboard_ready = 0u;
+    g_usb_hid_interrupt_pending = 0u;
+    g_usb_hid_interrupt_trb = 0;
+    g_usb_hid_interrupt_armed_us = 0u;
+    g_usb_hid_interrupt_debug_budget = 8u;
+    g_usb_hid_key_head = 0u;
+    g_usb_hid_key_tail = 0u;
 
     g_xhci_command_ring[15].parameter = (uint64_t)(uintptr_t)g_xhci_command_ring;
     g_xhci_command_ring[15].status = 0u;
-    g_xhci_command_ring[15].control = (6u << 10) | (1u << 1);
+    g_xhci_command_ring[15].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_LINK_TOGGLE | XHCI_TRB_CYCLE;
 
     g_xhci_erst[0].ring_segment_base = (uint64_t)(uintptr_t)g_xhci_event_ring;
     g_xhci_erst[0].ring_segment_size = 16u;
@@ -4205,7 +5380,8 @@ static int xhci_init(void) {
     xhci_op_write64(0x18u, ((uint64_t)(uintptr_t)g_xhci_command_ring) | 1u);
     xhci_runtime_write32(0x28u, 1u);
     xhci_runtime_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_erst);
-    xhci_runtime_write64(0x38u, (uint64_t)(uintptr_t)g_xhci_event_ring);
+    xhci_runtime_write64(0x38u, ((uint64_t)(uintptr_t)g_xhci_event_ring) | (1u << 3));
+    xhci_runtime_write32(0x20u, 0x01u);
     xhci_op_write32(0x38u, g_xhci_max_slots < 8u ? g_xhci_max_slots : 8u);
 
     memory_barrier();
@@ -4234,7 +5410,9 @@ static int xhci_init(void) {
     serial_write_hex32(g_xhci_runtime_offset);
     serial_write("\r\n");
 
-    (void)xhci_reset_connected_port();
+    if (xhci_reset_connected_port()) {
+        (void)xhci_enumerate_hid_keyboard();
+    }
     return 1;
 }
 
@@ -4916,8 +6094,13 @@ void SYSV_ABI device_entry_boot(const struct luna_bootview *bootview) {
     g_clock_tsc_base = clock_ticks();
     serial_write("[DEVICE] clock ready\r\n");
     (void)xhci_init();
+    if (g_usb_hid_poll_ready != 0u) {
+        input_ready = 1;
+    }
     if (!virtio_keyboard_init()) {
-        input_ready = keyboard_init();
+        if (keyboard_init()) {
+            input_ready = 1;
+        }
     } else {
         input_ready = 1;
     }

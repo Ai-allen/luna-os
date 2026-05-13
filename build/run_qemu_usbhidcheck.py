@@ -75,10 +75,13 @@ def main() -> int:
         "Exception Type",
         "Can't find image information",
         "[USER] session script cmd=",
-        "[DEVICE] input event src=usb-hid",
-        "[USER] input lane src=keyboard",
-        "[USER] shell accept src=keyboard",
-        "[USER] shell execute src=keyboard cmd=help",
+        "[DEVICE] input event src=i8042-kbd",
+        "[DEVICE] input event src=virtio-kbd",
+        "[DEVICE] input event src=serial-operator",
+        "[USER] input lane src=operator",
+        "[USER] shell accept src=operator",
+        "[USER] shell execute src=operator",
+        "[USER] input recovery=operator-shell",
     ]
 
     proc: subprocess.Popen[str] | None = None
@@ -128,25 +131,46 @@ def main() -> int:
                     "[DEVICE] input select basis=",
                     "usb-ctrl=ready",
                     "usb-hid=not-bound",
-                    "usb-hid-blocker=usb-enumeration-missing",
                     "[DEVICE] input ctrl legacy=missing",
+                    "[DEVICE] input select basis=usb-hid",
                     "[XHCI] controller ready",
                     "[XHCI] port ready",
-                    "[DEVICE] input usb candidate ctrl=xhci hid=not-bound blocker=usb-enumeration-missing owner=DEVICE consequence=degraded-continue",
+                    "[XHCI] slot enabled",
+                    "[XHCI] address device ready",
+                    "[USB] device descriptor ready",
+                    "[USB] config descriptor ready",
+                    "[USB] hid keyboard interface ready",
+                    "[USB] hid descriptor ready",
+                    "[USB] interrupt endpoint ready",
+                    "[USB] configuration set value=",
+                    "[USB] interrupt poll armed",
+                    "[DEVICE] input usb candidate ctrl=xhci hid=not-bound blocker=",
                     "[DEVICE] input usb host ctrl=xhci init=ready",
                     "port-ready=ready",
                     "[DEVICE] input usb pci ",
                     "class=0C/03/30",
                     "[USER] shell ready",
+                    "[USER] input lane ready",
                 ],
                 45.0,
                 forbidden=forbidden,
             )
-            if re.search(r"\[DEVICE\] input path .* lane=ready", boot_text):
-                raise RuntimeError("usbhidcheck unexpectedly reported input lane ready without USB-HID binding")
+            if "[USER] session script cmd=" in boot_text:
+                raise RuntimeError("usbhidcheck unexpectedly used session script input")
 
             send_keys_qmp(qmp, "help\r")
-            time.sleep(2.0)
+            wait_for_log(
+                [
+                    "[USB] HID interrupt report received",
+                    "[DEVICE] input event src=usb-hid key=68",
+                    "[USER] input lane src=keyboard key=68",
+                    "[USER] shell accept src=keyboard cmd=help",
+                    "[USER] shell execute src=keyboard cmd=help",
+                    "core: setup.status",
+                ],
+                20.0,
+                forbidden=forbidden,
+            )
         finally:
             if proc is not None and proc.poll() is None:
                 if qmp is not None:
@@ -165,8 +189,13 @@ def main() -> int:
     for needle in forbidden:
         if needle in stdout or needle in stderr:
             raise RuntimeError(f"usbhidcheck observed unexpected output: {needle}")
-    if "[DEVICE] input event src=" in stdout:
-        raise RuntimeError("usbhidcheck observed keyboard event despite missing USB-HID driver")
+    for match in re.finditer(r"\[DEVICE\] input event src=([^ ]+)", stdout):
+        if match.group(1) != "usb-hid":
+            raise RuntimeError(f"usbhidcheck observed non-USB-HID input source: {match.group(1)}")
+    if "[DEVICE] input event src=usb-hid key=68" not in stdout:
+        raise RuntimeError("usbhidcheck missing USB-HID DEVICE event for help")
+    if "[USER] shell execute src=keyboard cmd=help" not in stdout:
+        raise RuntimeError("usbhidcheck missing USB-HID-backed help execution")
 
     sys.stdout.write(stdout)
     return 0

@@ -390,6 +390,7 @@ enum luna_lane_driver_family {
     LUNA_LANE_DRIVER_PIIX_UART = 18,
     LUNA_LANE_DRIVER_ICH9_UART = 19,
     LUNA_LANE_DRIVER_VIRTIO_KEYBOARD = 20,
+    LUNA_LANE_DRIVER_USB_HID_KEYBOARD = 21,
 };
 
 enum luna_driver_stage {
