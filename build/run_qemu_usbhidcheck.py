@@ -138,9 +138,7 @@ def main() -> int:
                 "-drive",
                 f"format=raw,file={USBHID_DISK}",
                 "-device",
-                "qemu-xhci,id=xhci",
-                "-device",
-                "usb-kbd,bus=xhci.0",
+                "pcie-root-port,id=usbhotplug,chassis=1,slot=1",
                 "-serial",
                 f"file:{LOG_PATH.name}",
                 "-qmp",
@@ -162,6 +160,9 @@ def main() -> int:
         )
         try:
             qmp = QmpSession(proc)
+            wait_for_log(["[BOOT] dawn online"], 20.0, forbidden=forbidden)
+            qmp.execute("device_add", {"driver": "qemu-xhci", "bus": "usbhotplug", "id": "xhci"})
+            qmp.execute("device_add", {"driver": "usb-kbd", "bus": "xhci.0", "id": "luna-usb-kbd"})
             boot_text = wait_for_log(
                 [
                     "LunaLoader UEFI Stage 1 handoff",

@@ -325,6 +325,7 @@ static uint8_t g_xhci_event_dequeue = 0u;
 static uint8_t g_xhci_event_cycle = 1u;
 static uint32_t g_xhci_event_ring_ownership_conflicts = 0u;
 static uint32_t g_xhci_event_ring_restore_log_budget = 8u;
+static uint8_t g_xhci_bind_retry_count = 0u;
 static uint8_t g_xhci_ep0_enqueue = 0u;
 static uint8_t g_xhci_ep0_cycle = 1u;
 static uint8_t g_xhci_interrupt_enqueue = 0u;
@@ -1888,6 +1889,17 @@ static void pci_config_write16(uint8_t bus, uint8_t slot, uint8_t function, uint
         (offset & 0xFCu);
     outl(0xCF8u, address);
     outw((uint16_t)(0xCFCu + (offset & 0x02u)), value);
+}
+
+static void pci_config_write32(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset, uint32_t value) {
+    uint32_t address =
+        0x80000000u |
+        ((uint32_t)bus << 16) |
+        ((uint32_t)slot << 11) |
+        ((uint32_t)function << 8) |
+        (offset & 0xFCu);
+    outl(0xCF8u, address);
+    outl(0xCFCu, value);
 }
 
 static uint8_t pci_config_read8(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset) {
@@ -4153,25 +4165,55 @@ static uint8_t xhci_erdp_points_to_luna(uint64_t erdp) {
     return ptr >= base && ptr < limit;
 }
 
+static uint8_t xhci_event_ring_registers_owned_by_luna(void) {
+    uint64_t erstba = xhci_runtime_read64(0x30u) & ~0x3FULL;
+    uint32_t erstsz = xhci_read32(g_xhci_runtime_offset + 0x28u);
+    if (erstsz != 1u) {
+        return 0u;
+    }
+    if (erstba != (uint64_t)(uintptr_t)g_xhci_erst) {
+        return 0u;
+    }
+    return xhci_erdp_points_to_luna(xhci_runtime_read64(0x38u));
+}
+
 static void xhci_clear_event_interrupt_status(void) {
     xhci_runtime_write32(0x20u, 0x01u);
     xhci_op_write32(0x04u, (1u << 3));
     memory_barrier();
 }
 
+static int xhci_program_event_ring_registers(void) {
+    uint64_t want = xhci_event_ring_current_addr() | (1u << 3);
+    g_xhci_erst[0].ring_segment_base = (uint64_t)(uintptr_t)g_xhci_event_ring;
+    g_xhci_erst[0].ring_segment_size = XHCI_RING_TRBS;
+    g_xhci_erst[0].reserved = 0u;
+    memory_barrier();
+    for (uint32_t attempt = 0u; attempt < 8u; ++attempt) {
+        xhci_runtime_write32(0x28u, 1u);
+        xhci_runtime_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_erst);
+        xhci_runtime_write64(0x38u, want);
+        xhci_clear_event_interrupt_status();
+        xhci_runtime_write32(0x20u, 0x01u);
+        memory_barrier();
+        if (xhci_event_ring_registers_owned_by_luna()) {
+            return 1;
+        }
+        xhci_delay_us(250u);
+    }
+    return xhci_event_ring_registers_owned_by_luna() ? 1 : 0;
+}
+
 static void xhci_restore_event_ring_dequeue_if_needed(const char *phase) {
     uint64_t erdp = xhci_runtime_read64(0x38u);
+    uint64_t erstba = xhci_runtime_read64(0x30u);
+    uint32_t erstsz = xhci_read32(g_xhci_runtime_offset + 0x28u);
     uint64_t want;
-    if (xhci_erdp_points_to_luna(erdp)) {
+    if (xhci_event_ring_registers_owned_by_luna()) {
         return;
     }
     want = xhci_event_ring_current_addr() | (1u << 3);
-    xhci_runtime_write64(0x38u, want);
-    xhci_clear_event_interrupt_status();
-    if (!xhci_erdp_points_to_luna(xhci_runtime_read64(0x38u))) {
-        xhci_runtime_write64(0x38u, want);
-        xhci_clear_event_interrupt_status();
-    }
+    (void)xhci_program_event_ring_registers();
     g_xhci_event_ring_ownership_conflicts += 1u;
     g_usb_hid_blocker = "firmware-xhci-ownership-conflict";
     if (g_xhci_event_ring_restore_log_budget != 0u) {
@@ -4179,8 +4221,14 @@ static void xhci_restore_event_ring_dequeue_if_needed(const char *phase) {
         serial_write(phase);
         serial_write(" erdp=");
         serial_write_hex64(erdp);
+        serial_write(" erstba=");
+        serial_write_hex64(erstba);
+        serial_write(" erstsz=");
+        serial_write_hex32(erstsz);
         serial_write(" want=");
         serial_write_hex64(want);
+        serial_write(" owned=");
+        serial_write_hex8(xhci_event_ring_registers_owned_by_luna());
         serial_write(" conflicts=");
         serial_write_hex32(g_xhci_event_ring_ownership_conflicts);
         serial_write(" blocker=firmware-xhci-ownership-conflict\r\n");
@@ -4415,7 +4463,7 @@ static int xhci_address_device(uint8_t slot_id) {
     serial_write("[XHCI] address device ready slot=");
     serial_write_hex8(slot_id);
     serial_write("\r\n");
-    xhci_delay_us(10000u);
+    xhci_delay_us(50000u);
     return 1;
 }
 
@@ -5200,15 +5248,15 @@ static int xhci_reset_connected_port(void) {
 
         g_xhci_connected_port = port;
         g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
-        if ((portsc & 0x02u) == 0u) {
-            xhci_write32(offset, (portsc & ~port_rwc_mask) | (1u << 4));
-            for (uint32_t loops = 0u; loops < 10000000u; ++loops) {
-                portsc = xhci_read32(offset);
-                if ((portsc & (1u << 4)) == 0u) {
-                    break;
-                }
+        xhci_write32(offset, (portsc & ~port_rwc_mask) | (1u << 4));
+        for (uint32_t loops = 0u; loops < 10000000u; ++loops) {
+            portsc = xhci_read32(offset);
+            if ((portsc & (1u << 4)) == 0u && (portsc & 0x02u) != 0u) {
+                break;
             }
+            __asm__ volatile ("pause");
         }
+        xhci_delay_us(20000u);
 
         portsc = xhci_read32(offset);
         g_xhci_port_speed = (uint8_t)((portsc >> 10) & 0x0Fu);
@@ -5244,6 +5292,41 @@ static int xhci_reset_connected_port(void) {
     return 0;
 }
 
+static uintptr_t xhci_assign_mmio_bar_if_missing(uint8_t bus, uint8_t slot, uint8_t function) {
+    const uint64_t mmio_base = 0x000000C000000000ULL;
+    const uint32_t mmio32_base = 0xC1000000u;
+    uint32_t command = pci_config_read32(bus, slot, function, 0x04u);
+    uintptr_t existing = pci_read_bar_address(bus, slot, function, 0u);
+    uint32_t mask0;
+    uint32_t flags;
+    uint32_t type;
+
+    if (existing != 0u) {
+        return existing;
+    }
+
+    pci_config_write16(bus, slot, function, 0x04u, (uint16_t)(command & ~0x00000006u));
+    pci_config_write32(bus, slot, function, 0x10u, 0xFFFFFFFFu);
+    mask0 = pci_config_read32(bus, slot, function, 0x10u);
+    if ((mask0 & 0x01u) != 0u || mask0 == 0u || mask0 == 0xFFFFFFFFu) {
+        pci_config_write32(bus, slot, function, 0x10u, 0u);
+        pci_config_write16(bus, slot, function, 0x04u, (uint16_t)(command & 0xFFFFu));
+        return 0u;
+    }
+
+    flags = mask0 & 0x0Fu;
+    type = (mask0 >> 1) & 0x03u;
+    if (type == 0x02u) {
+        pci_config_write32(bus, slot, function, 0x10u, (uint32_t)(mmio_base & 0xFFFFFFF0u) | flags);
+        pci_config_write32(bus, slot, function, 0x14u, (uint32_t)(mmio_base >> 32));
+    } else {
+        pci_config_write32(bus, slot, function, 0x10u, (mmio32_base & 0xFFFFFFF0u) | flags);
+    }
+    command = pci_config_read32(bus, slot, function, 0x04u) | 0x00000006u;
+    pci_config_write16(bus, slot, function, 0x04u, (uint16_t)(command & 0xFFFFu));
+    return pci_read_bar_address(bus, slot, function, 0u);
+}
+
 static int xhci_init(void) {
     uint8_t bus = 0u;
     uint8_t slot = 0u;
@@ -5276,6 +5359,14 @@ static int xhci_init(void) {
     pci_config_write16(bus, slot, function, 0x04u, (uint16_t)(command & 0xFFFFu));
 
     bar = pci_read_bar_address(bus, slot, function, 0u);
+    if (bar == 0u) {
+        bar = xhci_assign_mmio_bar_if_missing(bus, slot, function);
+        if (bar != 0u) {
+            serial_write("[XHCI] pci mmio assigned bar0=");
+            serial_write_hex64((uint64_t)bar);
+            serial_write("\r\n");
+        }
+    }
     if (bar == 0u) {
         g_usb_hid_blocker = "pci-bar-mmio-missing";
         return 0;
@@ -5385,16 +5476,12 @@ static int xhci_init(void) {
         (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_LINK_TOGGLE | XHCI_TRB_CYCLE;
 
     g_xhci_erst[0].ring_segment_base = (uint64_t)(uintptr_t)g_xhci_event_ring;
-    g_xhci_erst[0].ring_segment_size = 16u;
+    g_xhci_erst[0].ring_segment_size = XHCI_RING_TRBS;
     g_xhci_erst[0].reserved = 0u;
 
     xhci_op_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_dcbaa);
     xhci_op_write64(0x18u, ((uint64_t)(uintptr_t)g_xhci_command_ring) | 1u);
-    xhci_runtime_write32(0x28u, 1u);
-    xhci_runtime_write64(0x30u, (uint64_t)(uintptr_t)g_xhci_erst);
-    xhci_runtime_write64(0x38u, ((uint64_t)(uintptr_t)g_xhci_event_ring) | (1u << 3));
-    xhci_clear_event_interrupt_status();
-    xhci_runtime_write32(0x20u, 0x01u);
+    xhci_program_event_ring_registers();
     xhci_op_write32(0x38u, g_xhci_max_slots < 8u ? g_xhci_max_slots : 8u);
 
     memory_barrier();
@@ -5424,7 +5511,14 @@ static int xhci_init(void) {
     serial_write("\r\n");
 
     if (xhci_reset_connected_port()) {
-        (void)xhci_enumerate_hid_keyboard();
+        if (!xhci_enumerate_hid_keyboard() &&
+            g_xhci_event_ring_ownership_conflicts != 0u &&
+            g_xhci_bind_retry_count == 0u) {
+            serial_write("[XHCI] hid bind retry reason=event-ring-ownership-conflict\r\n");
+            g_xhci_bind_retry_count = 1u;
+            g_xhci_ready = 0u;
+            return xhci_init();
+        }
     }
     return 1;
 }
