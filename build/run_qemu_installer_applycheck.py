@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,9 @@ BOOT_ERR = ROOT / "qemu_installer_target_bootcheck.err.log"
 INSTALL_VARS = ROOT / "ovmf-installer-target-vars.fd"
 BOOT_VARS = ROOT / "ovmf-installer-target-boot-vars.fd"
 TARGET_SIZE = 128 * 1024 * 1024
+TARGET_ZERO_CHUNK_SIZE = 1024 * 1024
+INSTALL_TIMEOUT_SECONDS = 180.0
+BOOT_TIMEOUT_SECONDS = 90.0
 
 
 def find_qemu() -> str:
@@ -56,9 +60,15 @@ def find_ovmf_vars_template() -> Path:
 
 
 def create_blank_target() -> None:
+    zero_chunk = b"\0" * TARGET_ZERO_CHUNK_SIZE
+    remaining = TARGET_SIZE
     with TARGET_IMAGE.open("wb") as handle:
-        handle.seek(TARGET_SIZE - 1)
-        handle.write(b"\0")
+        while remaining > 0:
+            chunk_size = min(remaining, TARGET_ZERO_CHUNK_SIZE)
+            handle.write(zero_chunk[:chunk_size])
+            remaining -= chunk_size
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def cleanup_logs(*paths: Path) -> None:
@@ -192,7 +202,7 @@ def main() -> int:
             "[INSTALLER] gpt entries fail",
             "[INSTALLER] gpt backup entries fail",
         ],
-        60.0,
+        INSTALL_TIMEOUT_SECONDS,
     )
 
     verify_target_image()
@@ -236,7 +246,7 @@ def main() -> int:
             "[BOOT] lsys read fail",
             "[BOOT] lsys contract fail",
         ],
-        60.0,
+        BOOT_TIMEOUT_SECONDS,
     )
 
     sys.stdout.write(install_log)
