@@ -122,6 +122,81 @@ def wait_for_ordered_patterns(
     raise RuntimeError(f"desktopinputcheck missing ordered real keyboard path: {description}")
 
 
+def wait_for_log_idle(
+    log_path: Path,
+    stable_seconds: float,
+    timeout_seconds: float,
+    forbidden: list[str] | None = None,
+) -> str:
+    deadline = time.time() + timeout_seconds
+    forbidden = forbidden or []
+    last_text = read_log(log_path)
+    stable_since = time.time()
+    while time.time() < deadline:
+        text = read_log(log_path)
+        for needle in forbidden:
+            if needle in text:
+                raise RuntimeError(f"desktopinputcheck observed failure output: {needle}")
+        if len(text) != len(last_text):
+            last_text = text
+            stable_since = time.time()
+        elif time.time() - stable_since >= stable_seconds:
+            return text
+        time.sleep(0.02)
+    return read_log(log_path)
+
+
+def key_hex_for_char(ch: str) -> str:
+    if ch in ("\r", "\n"):
+        return "0A"
+    return f"{ord(ch):02X}"
+
+
+def wait_for_marker_count(
+    log_path: Path,
+    marker: str,
+    minimum_count: int,
+    timeout_seconds: float,
+    forbidden: list[str],
+) -> str:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        text = read_log(log_path)
+        for needle in forbidden:
+            if needle in text:
+                raise RuntimeError(f"desktopinputcheck observed failure output: {needle}")
+        if text.count(marker) >= minimum_count:
+            return text
+        time.sleep(0.01)
+    text = read_log(log_path)
+    if text.count(marker) < minimum_count:
+        raise RuntimeError(f"desktopinputcheck missing synchronized keyboard evidence: {marker}")
+    return text
+
+
+def wait_for_pattern_count(
+    log_path: Path,
+    pattern: str,
+    minimum_count: int,
+    timeout_seconds: float,
+    forbidden: list[str],
+) -> str:
+    compiled = re.compile(pattern)
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        text = read_log(log_path)
+        for needle in forbidden:
+            if needle in text:
+                raise RuntimeError(f"desktopinputcheck observed failure output: {needle}")
+        if len(compiled.findall(text)) >= minimum_count:
+            return text
+        time.sleep(0.01)
+    text = read_log(log_path)
+    if len(compiled.findall(text)) < minimum_count:
+        raise RuntimeError(f"desktopinputcheck missing synchronized keyboard evidence: {pattern}")
+    return text
+
+
 def wait_for_keyboard_command_path(
     log_path: Path,
     first_key_hex: str,
@@ -145,13 +220,31 @@ def wait_for_keyboard_command_path(
 
 
 def send_key_qmp(qmp: QmpSession, qcode: str) -> None:
-    qmp.execute("human-monitor-command", {"command-line": f"sendkey {qcode}"})
-    time.sleep(0.16)
+    qmp.execute("human-monitor-command", {"command-line": f"sendkey {qcode} 350"})
+    time.sleep(0.42)
 
 
-def send_keys_qmp(qmp: QmpSession, text: str) -> None:
+def send_keys_qmp(qmp: QmpSession, text: str, log_path: Path, forbidden: list[str]) -> None:
+    wait_for_log_idle(log_path, 0.45, 5.0, forbidden=forbidden)
     for ch in text:
-        send_key_qmp(qmp, qmp_qcode_for_char(ch))
+        key_hex = key_hex_for_char(ch)
+        device_pattern = rf"\[DEVICE\] input event src={REAL_KEYBOARD_SOURCE_PATTERN} key={key_hex}"
+        user_marker = f"[USER] input lane src=keyboard key={key_hex}"
+        last_error: Exception | None = None
+        for _ in range(3):
+            snapshot = read_log(log_path)
+            device_target = len(re.findall(device_pattern, snapshot)) + 1
+            user_target = snapshot.count(user_marker) + 1
+            send_key_qmp(qmp, qmp_qcode_for_char(ch))
+            try:
+                wait_for_pattern_count(log_path, device_pattern, device_target, 6.0, forbidden)
+                wait_for_marker_count(log_path, user_marker, user_target, 4.0, forbidden)
+                last_error = None
+                break
+            except RuntimeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
         time.sleep(0.08)
 
 
@@ -243,7 +336,7 @@ def run_setup_boot(qemu: str, ovmf_code: str, forbidden: list[str], stderr_file)
         if "setup.init h u p\r\n" in boot_text:
             raise RuntimeError("desktopinputcheck setup boot started with pre-seeded commands")
 
-        send_keys_qmp(qmp, "setup.init h dev p\r")
+        send_keys_qmp(qmp, "setup.init h dev p\r", SETUP_LOG_PATH, forbidden)
         wait_for_keyboard_command_path(
             SETUP_LOG_PATH,
             "73",
@@ -295,7 +388,7 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
         if "login u p\r\n" in boot_text:
             raise RuntimeError("desktopinputcheck input boot started with pre-seeded commands")
 
-        send_keys_qmp(qmp, "login dev p\r")
+        send_keys_qmp(qmp, "login dev p\r", RUN_LOG_PATH, forbidden)
         wait_for_keyboard_command_path(
             RUN_LOG_PATH,
             "6C",
@@ -314,7 +407,7 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
             forbidden=forbidden,
         )
 
-        send_keys_qmp(qmp, "f")
+        send_keys_qmp(qmp, "f", RUN_LOG_PATH, forbidden)
         wait_for_match(
             RUN_LOG_PATH,
             rf"\[DEVICE\] input event src={REAL_KEYBOARD_SOURCE_PATTERN} key=66",

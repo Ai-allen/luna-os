@@ -212,8 +212,8 @@ def main() -> int:
         CHECK_IMAGE,
         LOG4_PATH,
         ERR4_PATH,
-        ["update action=applied", "launch request: sample.luna"],
-        40.0,
+        ["update action=applied", "launch request: sample.luna", "apps 1-5 or F/N/G/C/H"],
+        70.0,
     )
 
     require_all(
