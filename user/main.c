@@ -1760,6 +1760,110 @@ static void print_query_rows(struct luna_query_row *rows, uint32_t count) {
     }
 }
 
+static const char *files_row_name(const struct luna_query_row *row) {
+    if (row != 0 && row->name[0] != '\0') {
+        return row->name;
+    }
+    if (row != 0 && row->label[0] != '\0') {
+        return row->label;
+    }
+    return "object";
+}
+
+static const char *files_row_kind(uint32_t object_type) {
+    if (object_type == LUNA_NOTE_OBJECT_TYPE) {
+        return "note";
+    }
+    if (object_type == LUNA_THEME_OBJECT_TYPE) {
+        return "theme";
+    }
+    if (object_type == LUNA_FILES_VIEW_OBJECT_TYPE) {
+        return "files-view";
+    }
+    if (object_type == LUNA_SET_OBJECT_TYPE) {
+        return "set";
+    }
+    if (object_type == LUNA_DATA_OBJECT_TYPE_PACKAGE_INSTALL) {
+        return "package";
+    }
+    if (object_type == LUNA_DATA_OBJECT_TYPE_LSON_RECORD) {
+        return "lson";
+    }
+    return "object";
+}
+
+static const char *files_row_state(uint32_t state) {
+    if (state == 1u) {
+        return "normal";
+    }
+    if (state == 2u) {
+        return "readonly";
+    }
+    if (state == 3u) {
+        return "recovery";
+    }
+    if (state == 4u) {
+        return "missing";
+    }
+    return "unknown";
+}
+
+static void append_text_limited(char *out, uint32_t out_size, uint32_t *cursor, const char *text) {
+    if (out == 0 || cursor == 0 || text == 0 || out_size == 0u) {
+        return;
+    }
+    while (*cursor + 1u < out_size && text[0] != '\0') {
+        out[*cursor] = text[0];
+        *cursor += 1u;
+        text += 1;
+    }
+    out[*cursor] = '\0';
+}
+
+static void build_files_window_row(char *out, uint32_t out_size, const struct luna_query_row *row, uint32_t index, uint32_t selected) {
+    char digits[12];
+    char hex[17];
+    uint32_t cursor = 0u;
+
+    if (out == 0 || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    append_text_limited(out, out_size, &cursor, selected ? "> " : "  ");
+    append_u32_decimal(digits, index + 1u);
+    append_text_limited(out, out_size, &cursor, digits);
+    append_text_limited(out, out_size, &cursor, " ");
+    append_text_limited(out, out_size, &cursor, files_row_kind(row != 0 ? row->object_type : 0u));
+    append_text_limited(out, out_size, &cursor, " ");
+    append_u64_hex_fixed(hex, row != 0 ? row->object_low : 0u, 8u);
+    append_text_limited(out, out_size, &cursor, hex);
+}
+
+static void print_files_lafs_rows(struct luna_query_row *rows, uint32_t count) {
+    char digits[24];
+    char hex[17];
+
+    device_write("files.source=lafs target=user-documents query=lasql owner=DATA consumer=USER\r\n");
+    for (uint32_t i = 0u; i < count; ++i) {
+        device_write("files.entry ");
+        append_u32_decimal(digits, i + 1u);
+        device_write(digits);
+        device_write(" name=");
+        device_write(files_row_name(&rows[i]));
+        device_write(" kind=");
+        device_write(files_row_kind(rows[i].object_type));
+        device_write(" type=");
+        append_u32_hex_fixed(digits, rows[i].object_type, 8u);
+        device_write(digits);
+        device_write(" state=");
+        device_write(files_row_state(rows[i].state));
+        device_write(" source=lafs query=lasql ref=0x");
+        append_u64_hex_fixed(hex, rows[i].object_low, 16u);
+        device_write(hex);
+        device_write(g_msg_newline);
+    }
+}
+
 static void print_lasql_catalog(void) {
     struct luna_query_request request;
     uint32_t status;
@@ -1835,6 +1939,7 @@ static void print_file_rows_status(struct luna_query_row *rows, uint32_t count) 
         device_write("unavailable");
     }
     device_write(g_msg_newline);
+    print_files_lafs_rows(rows, count);
 }
 
 static void print_lasql_logs(void) {
@@ -5314,6 +5419,8 @@ static int run_app(const char *name, size_t len) {
             device_write(g_msg_run_fail);
             device_write("files window unavailable\r\n");
             return 0;
+        } else {
+            print_files_status();
         }
         return 1;
     }
@@ -5882,6 +5989,9 @@ static uint32_t render_files_window(void) {
     char line0[48];
     char line1[48];
     char line2[48];
+    char line3[48];
+    char line4[48];
+    char line5[48];
     char digits[16];
     uint32_t count = 0u;
 
@@ -5897,17 +6007,37 @@ static uint32_t render_files_window(void) {
     zero_bytes(line0, sizeof(line0));
     zero_bytes(line1, sizeof(line1));
     zero_bytes(line2, sizeof(line2));
+    zero_bytes(line3, sizeof(line3));
+    zero_bytes(line4, sizeof(line4));
+    zero_bytes(line5, sizeof(line5));
     zero_bytes(digits, sizeof(digits));
     append_u32_decimal(digits, count);
     copy_single_line(line0, sizeof(line0), "files surface ready");
-    copy_single_line(line1, sizeof(line1), "documents visible");
-    copy_single_line(line2, sizeof(line2), digits);
+    copy_single_line(line1, sizeof(line1), "source LaFS DATA");
+    copy_single_line(line2, sizeof(line2), "entries ");
+    {
+        uint32_t cursor = 8u;
+        append_text_limited(line2, sizeof(line2), &cursor, digits);
+    }
+    if (count == 0u) {
+        copy_single_line(line3, sizeof(line3), "empty");
+    } else {
+        build_files_window_row(line3, sizeof(line3), &g_lasql_data_payload.rows[0], 0u, g_files_selection == 0u);
+    }
+    if (count > 1u) {
+        build_files_window_row(line4, sizeof(line4), &g_lasql_data_payload.rows[1], 1u, g_files_selection == 1u);
+    }
+    if (count > 2u) {
+        build_files_window_row(line5, sizeof(line5), &g_lasql_data_payload.rows[2], 2u, g_files_selection == 2u);
+    } else {
+        copy_single_line(line5, sizeof(line5), "enter opens selected");
+    }
     window_fill_line(g_files_window_id, 0u, line0, 0x1Fu);
-    window_fill_line(g_files_window_id, 1u, "files.user", 0x1Fu);
-    window_fill_line(g_files_window_id, 2u, g_username, 0x1Fu);
-    window_fill_line(g_files_window_id, 3u, line1, 0x1Fu);
-    window_fill_line(g_files_window_id, 4u, line2, 0x1Fu);
-    window_fill_line(g_files_window_id, 5u, "open notes or theme", 0x1Fu);
+    window_fill_line(g_files_window_id, 1u, line1, 0x1Fu);
+    window_fill_line(g_files_window_id, 2u, line2, 0x1Fu);
+    window_fill_line(g_files_window_id, 3u, line3, 0x1Fu);
+    window_fill_line(g_files_window_id, 4u, line4, 0x1Fu);
+    window_fill_line(g_files_window_id, 5u, line5, 0x1Fu);
     return 1u;
 }
 
