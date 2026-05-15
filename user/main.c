@@ -1805,6 +1805,9 @@ static const char *files_row_state(uint32_t state) {
     if (state == 4u) {
         return "missing";
     }
+    if (state == 5u) {
+        return "denied";
+    }
     return "unknown";
 }
 
@@ -1835,6 +1838,32 @@ static void build_files_window_row(char *out, uint32_t out_size, const struct lu
     append_text_limited(out, out_size, &cursor, " ");
     append_text_limited(out, out_size, &cursor, files_row_kind(row != 0 ? row->object_type : 0u));
     append_text_limited(out, out_size, &cursor, " ");
+    append_u64_hex_fixed(hex, row != 0 ? row->object_low : 0u, 16u);
+    append_text_limited(out, out_size, &cursor, hex);
+}
+
+static void build_files_window_meta(char *out, uint32_t out_size, const struct luna_query_row *row) {
+    uint32_t cursor = 0u;
+
+    if (out == 0 || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    append_text_limited(out, out_size, &cursor, "meta ");
+    append_text_limited(out, out_size, &cursor, files_row_name(row));
+    append_text_limited(out, out_size, &cursor, " ");
+    append_text_limited(out, out_size, &cursor, files_row_state(row != 0 ? row->state : 4u));
+}
+
+static void build_files_window_ref(char *out, uint32_t out_size, const struct luna_query_row *row) {
+    char hex[17];
+    uint32_t cursor = 0u;
+
+    if (out == 0 || out_size == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    append_text_limited(out, out_size, &cursor, "ref ");
     append_u64_hex_fixed(hex, row != 0 ? row->object_low : 0u, 8u);
     append_text_limited(out, out_size, &cursor, hex);
 }
@@ -1862,6 +1891,75 @@ static void print_files_lafs_rows(struct luna_query_row *rows, uint32_t count) {
         device_write(hex);
         device_write(g_msg_newline);
     }
+}
+
+static void print_files_selected_metadata(struct luna_query_row *rows, uint32_t count) {
+    char digits[24];
+    char hex[17];
+    const struct luna_query_row *row = 0;
+
+    if (rows != 0 && count != 0u && g_files_selection < count) {
+        row = &rows[g_files_selection];
+    }
+
+    if (row == 0) {
+        device_write("files.meta selected=none source=LaFS owner-space=DATA consumer=USER query=LaSQL status=missing\r\n");
+        device_write("files.status selected=none state=missing normal=no readonly=no recovery=no denied=no missing=yes\r\n");
+        return;
+    }
+
+    device_write("files.meta selected=");
+    append_u32_decimal(digits, g_files_selection);
+    device_write(digits);
+    device_write(" name=");
+    device_write(files_row_name(row));
+    device_write(" kind=");
+    device_write(files_row_kind(row->object_type));
+    device_write(" source=LaFS owner-space=DATA consumer=USER query=LaSQL\r\n");
+
+    device_write("files.meta ref=0x");
+    append_u64_hex_fixed(hex, row->object_low, 16u);
+    device_write(hex);
+    device_write(" type=");
+    append_u32_hex_fixed(digits, row->object_type, 8u);
+    device_write(digits);
+    device_write(" state=");
+    device_write(files_row_state(row->state));
+    device_write(" flags=");
+    append_u32_hex_fixed(digits, row->flags, 8u);
+    device_write(digits);
+    device_write(" owner-ref=0x");
+    append_u64_hex_fixed(hex, row->owner_low, 16u);
+    device_write(hex);
+    device_write(g_msg_newline);
+
+    device_write("files.meta created=");
+    append_u64_decimal(digits, row->created_at);
+    device_write(digits);
+    device_write(" updated=");
+    append_u64_decimal(digits, row->updated_at);
+    device_write(digits);
+    device_write(" version=");
+    append_u64_decimal(digits, row->version);
+    device_write(digits);
+    device_write(" size=unavailable record-count=unavailable\r\n");
+
+    device_write("files.status selected=");
+    append_u32_decimal(digits, g_files_selection);
+    device_write(digits);
+    device_write(" state=");
+    device_write(files_row_state(row->state));
+    device_write(" normal=");
+    device_write(row->state == 1u ? "yes" : "no");
+    device_write(" readonly=");
+    device_write(row->state == 2u ? "yes" : "no");
+    device_write(" recovery=");
+    device_write(row->state == 3u ? "yes" : "no");
+    device_write(" denied=");
+    device_write(row->state == 5u ? "yes" : "no");
+    device_write(" missing=");
+    device_write(row->state == 4u ? "yes" : "no");
+    device_write(g_msg_newline);
 }
 
 static void print_lasql_catalog(void) {
@@ -1940,6 +2038,7 @@ static void print_file_rows_status(struct luna_query_row *rows, uint32_t count) 
     }
     device_write(g_msg_newline);
     print_files_lafs_rows(rows, count);
+    print_files_selected_metadata(rows, count);
 }
 
 static void print_lasql_logs(void) {
@@ -5992,6 +6091,8 @@ static uint32_t render_files_window(void) {
     char line3[48];
     char line4[48];
     char line5[48];
+    char line6[48];
+    char line7[48];
     char digits[16];
     uint32_t count = 0u;
 
@@ -6010,6 +6111,8 @@ static uint32_t render_files_window(void) {
     zero_bytes(line3, sizeof(line3));
     zero_bytes(line4, sizeof(line4));
     zero_bytes(line5, sizeof(line5));
+    zero_bytes(line6, sizeof(line6));
+    zero_bytes(line7, sizeof(line7));
     zero_bytes(digits, sizeof(digits));
     append_u32_decimal(digits, count);
     copy_single_line(line0, sizeof(line0), "files surface ready");
@@ -6032,12 +6135,21 @@ static uint32_t render_files_window(void) {
     } else {
         copy_single_line(line5, sizeof(line5), "enter opens selected");
     }
+    if (count == 0u || g_files_selection >= count) {
+        copy_single_line(line6, sizeof(line6), "meta missing");
+        copy_single_line(line7, sizeof(line7), "state missing");
+    } else {
+        build_files_window_meta(line6, sizeof(line6), &g_lasql_data_payload.rows[g_files_selection]);
+        build_files_window_ref(line7, sizeof(line7), &g_lasql_data_payload.rows[g_files_selection]);
+    }
     window_fill_line(g_files_window_id, 0u, line0, 0x1Fu);
     window_fill_line(g_files_window_id, 1u, line1, 0x1Fu);
     window_fill_line(g_files_window_id, 2u, line2, 0x1Fu);
     window_fill_line(g_files_window_id, 3u, line3, 0x1Fu);
     window_fill_line(g_files_window_id, 4u, line4, 0x1Fu);
     window_fill_line(g_files_window_id, 5u, line5, 0x1Fu);
+    window_fill_line(g_files_window_id, 6u, line6, 0x1Fu);
+    window_fill_line(g_files_window_id, 7u, line7, 0x1Fu);
     return 1u;
 }
 

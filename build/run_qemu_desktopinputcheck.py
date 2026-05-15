@@ -422,6 +422,9 @@ def run_desktop_input_boot(qemu: str, ovmf_code: str, forbidden: list[str], stde
                 "files.source=lafs target=user-documents query=lasql owner=DATA consumer=USER",
                 "files.entry 1 name=",
                 "source=lafs query=lasql ref=0x",
+                "files.meta selected=0 name=",
+                "source=LaFS owner-space=DATA consumer=USER query=LaSQL",
+                "files.status selected=0 state=normal",
             ],
             15.0,
             forbidden=forbidden,
@@ -484,6 +487,9 @@ def main() -> int:
         "files.source=lafs target=user-documents query=lasql owner=DATA consumer=USER",
         "files.entry 1 name=",
         "source=lafs query=lasql ref=0x",
+        "files.meta selected=0 name=",
+        "source=LaFS owner-space=DATA consumer=USER query=LaSQL",
+        "files.status selected=0 state=normal",
     ]
     for needle in required:
         if needle not in combined:
